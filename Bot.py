@@ -186,6 +186,18 @@ async def update_username(user_id: int, username: str):
         await execute_db("UPDATE countries SET username = ? WHERE owner_id = ?", (username, user_id))
 
 # ========================================================================
+# УСТАНОВКА КОМАНД БОТА (МЕНЮ)
+# ========================================================================
+async def set_bot_commands():
+    """Устанавливает меню команд бота при вводе / """
+    commands = [
+        types.BotCommand(command="start", description="🔄 Начать игру / Главное меню"),
+        types.BotCommand(command="send", description="📦 Торговля и перевод ресурсов"),
+        types.BotCommand(command="admin", description="⚙️ Панель администратора (Только для админов)"),
+    ]
+    await bot.set_my_commands(commands)
+
+# ========================================================================
 # ФОНОВЫЕ ЗАДАЧИ (ЭКОНОМИКА - 3 МИНУТЫ)
 # ========================================================================
 async def economy_tick():
@@ -690,6 +702,17 @@ async def cmd_aly_join_req(callback: types.CallbackQuery):
         return await callback.answer("Вы уже подали заявку в этот альянс!", show_alert=True)
         
     await execute_db("INSERT INTO alliance_requests (alliance_id, user_id) VALUES (?, ?)", (aly_id, callback.from_user.id))
+    
+    aly = await fetch_one("SELECT * FROM alliances WHERE id = ?", (aly_id,))
+    if aly and aly['leader_id']:
+        country = await fetch_one("SELECT * FROM countries WHERE owner_id = ?", (callback.from_user.id,))
+        try:
+            await bot.send_message(
+                aly['leader_id'],
+                f"📥 <b>Новая заявка в альянс!</b>\nСтрана {country['flag']} {country['name']} хочет вступить в ваш альянс. Перейдите в меню альянса для ответа."
+            )
+        except: pass
+
     await callback.answer("✅ Заявка отправлена лидеру альянса!", show_alert=True)
 
 @dp.callback_query(F.data == "aly_reqs")
@@ -719,13 +742,26 @@ async def aly_accept(callback: types.CallbackQuery):
     await execute_db("UPDATE countries SET alliance_id = ? WHERE owner_id = ?", (country['alliance_id'], user_id))
     await execute_db("DELETE FROM alliance_requests WHERE user_id = ?", (user_id,))
     
+    try:
+        aly = await fetch_one("SELECT * FROM alliances WHERE id = ?", (country['alliance_id'],))
+        await bot.send_message(user_id, f"🎉 <b>Альянс:</b> Ваша заявка в {aly['flag']} {aly['name']} одобрена! Вы успешно приняты.")
+    except: pass
+
     await callback.answer("Игрок принят в альянс!", show_alert=True)
     await cmd_aly_reqs(callback)
 
 @dp.callback_query(F.data.startswith("aly_rej_"))
 async def aly_reject(callback: types.CallbackQuery):
     req_id = int(callback.data.split("_")[2])
-    await execute_db("DELETE FROM alliance_requests WHERE id = ?", (req_id,))
+    
+    req = await fetch_one("SELECT * FROM alliance_requests WHERE id = ?", (req_id,))
+    if req:
+        user_id = req['user_id']
+        await execute_db("DELETE FROM alliance_requests WHERE id = ?", (req_id,))
+        try:
+            await bot.send_message(user_id, f"❌ <b>Альянс:</b> Ваша заявка на вступление была отклонена лидером.")
+        except: pass
+
     await callback.answer("Заявка успешно отклонена.", show_alert=True)
     await cmd_aly_reqs(callback)
 
@@ -806,7 +842,15 @@ async def aly_flag_step(message: types.Message, state: FSMContext):
 @dp.callback_query(F.data == "aly_leave")
 async def cmd_aly_leave(callback: types.CallbackQuery):
     country = await fetch_one("SELECT * FROM countries WHERE owner_id = ?", (callback.from_user.id,))
+    aly_id = country['alliance_id']
     await execute_db("UPDATE countries SET alliance_id = 0 WHERE id = ?", (country['id'],))
+    
+    aly = await fetch_one("SELECT * FROM alliances WHERE id = ?", (aly_id,))
+    if aly and aly['leader_id']:
+        try:
+            await bot.send_message(aly['leader_id'], f"🚪 <b>Альянс:</b> Страна {country['flag']} {country['name']} покинула ваши ряды.")
+        except: pass
+
     await callback.answer("Вы покинули Альянс.", show_alert=True)
     await safe_edit(callback.message, "Вы покинули Альянс.", reply_markup=main_menu_kb())
 
@@ -814,9 +858,19 @@ async def cmd_aly_leave(callback: types.CallbackQuery):
 async def cmd_aly_disband(callback: types.CallbackQuery):
     country = await fetch_one("SELECT * FROM countries WHERE owner_id = ?", (callback.from_user.id,))
     aly_id = country['alliance_id']
+    
+    members = await fetch_all("SELECT owner_id FROM countries WHERE alliance_id = ? AND owner_id != ?", (aly_id, callback.from_user.id))
+    
     await execute_db("UPDATE countries SET alliance_id = 0 WHERE alliance_id = ?", (aly_id,))
     await execute_db("DELETE FROM alliances WHERE id = ?", (aly_id,))
     await execute_db("DELETE FROM alliance_requests WHERE alliance_id = ?", (aly_id,))
+    
+    for m in members:
+        if m['owner_id']:
+            try:
+                await bot.send_message(m['owner_id'], "❌ <b>Альянс распущен</b> его лидером. Ваша страна теперь независимое государство.")
+            except: pass
+
     await callback.answer("Альянс распущен!", show_alert=True)
     await safe_edit(callback.message, "Ваш Альянс был навсегда распущен.", reply_markup=main_menu_kb())
 
@@ -892,6 +946,13 @@ async def process_spy(callback: types.CallbackQuery):
     set_attack_cooldown(callback.from_user.id)
     
     if random.random() < 0.2:
+        if defender['owner_id']:
+            try:
+                await bot.send_message(
+                    defender['owner_id'],
+                    f"⚠️ <b>КОНТРРАЗВЕДКА:</b> Пойман вражеский шпион из страны {attacker['flag']} {attacker['name']}! Враг собирает информацию о нашей армии."
+                )
+            except: pass
         await callback.answer("Операция провалена!", show_alert=True)
         return await safe_edit(callback.message, "💥 <b>Провал операции!</b>\nШпион раскрыт.", reply_markup=tactics_kb(target_id))
         
@@ -928,6 +989,15 @@ async def process_attack(callback: types.CallbackQuery):
     await execute_db("UPDATE countries SET food = food - 200, oil = oil - 100 WHERE id = ?", (attacker['id'],))
     set_attack_cooldown(callback.from_user.id)
     
+    # Предупреждение для обороняющегося перед атакой
+    if defender['owner_id']:
+        try:
+            await bot.send_message(
+                defender['owner_id'],
+                f"🚨 <b>ОБЪЯВЛЕНИЕ ВОЙНЫ!</b>\nСтрана {attacker['flag']} {attacker['name']} начала вторжение на наши территории! Вражеские войска пересекают границу!"
+            )
+        except: pass
+
     await safe_edit(callback.message, "🚀 <b>Войска пересекают границу...</b>\n\n🛰 Идет оценка обстановки...")
     await asyncio.sleep(2)
 
@@ -1002,6 +1072,17 @@ async def process_attack(callback: types.CallbackQuery):
         
         report.append(f"\n🎉 <b>ПОБЕДА! Оборона прорвана!</b>")
         report.append(f"💰 Захвачено: {stolen_money}$, {stolen_materials} Мат., {stolen_oil} Нефти")
+        
+        if defender['owner_id']:
+            try:
+                def_msg = (
+                    f"💥 <b>ФРОНТ ПРОРВАН!</b>\n"
+                    f"Страна {attacker['flag']} {attacker['name']} одержала победу над нашими войсками.\n"
+                    f"Утеряно: {stolen_money}$, {stolen_materials} Мат., {stolen_oil} Нефти и {stolen_territory} км² территории."
+                )
+                await bot.send_message(defender['owner_id'], def_msg)
+            except: pass
+            
     else:
         await execute_db("UPDATE countries SET infantry = CAST(infantry * ? AS INT), cars = CAST(cars * ? AS INT), tanks = CAST(tanks * ? AS INT), bridges = bridges - ? WHERE id = ?", 
                          (1.0 - att_casualty_rate, 1.0 - att_casualty_rate, 1.0 - att_casualty_rate, bridges_used, attacker['id']))
@@ -1009,6 +1090,16 @@ async def process_attack(callback: types.CallbackQuery):
                          (1.0 - (def_casualty_rate / 2), defender['id']))
 
         report.append(f"\n☠️ <b>ПОРАЖЕНИЕ!</b> Наступление захлебнулось.")
+
+        if defender['owner_id']:
+            try:
+                def_msg = (
+                    f"🛡 <b>ВРАГ ОТБРОШЕН!</b>\n"
+                    f"Мы успешно отбили атаку страны {attacker['flag']} {attacker['name']}!\n"
+                    f"Их наступление захлебнулось, вражеские войска понесли огромные потери и отступили с нашей территории."
+                )
+                await bot.send_message(defender['owner_id'], def_msg)
+            except: pass
 
     await safe_edit(callback.message, "\n".join(report), reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ В штаб", callback_data="menu_war")]]))
     await callback.answer()
@@ -1281,6 +1372,10 @@ async def admin_rem_finish(message: types.Message, state: FSMContext):
 # ========================================================================
 async def main():
     await init_db()
+    
+    # Установка меню команд
+    await set_bot_commands()
+    
     asyncio.create_task(economy_tick())
     
     logging.info("Бот запущен. Мир начал свое существование...")
