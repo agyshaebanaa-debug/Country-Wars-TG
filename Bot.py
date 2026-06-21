@@ -1,15 +1,16 @@
 import asyncio
 import logging
 import random
+import time
 from datetime import datetime
 
 from aiogram import Bot, Dispatcher, F, types
-# Импортируем DefaultBotProperties для исправления ошибки инициализации
 from aiogram.client.default import DefaultBotProperties
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
+from aiogram.exceptions import TelegramBadRequest
 import aiosqlite
 
 # ========================================================================
@@ -21,7 +22,6 @@ DB_NAME = "database.db"
 
 logging.basicConfig(level=logging.INFO)
 
-# ИСПРАВЛЕНИЕ: Используем DefaultBotProperties вместо прямого parse_mode
 bot = Bot(
     token=BOT_TOKEN, 
     default=DefaultBotProperties(parse_mode="HTML")
@@ -29,11 +29,47 @@ bot = Bot(
 dp = Dispatcher()
 
 # ========================================================================
+# АНТИ-СПАМ СИСТЕМА (ЗАЩИТА ОТ АБУЗА)
+# ========================================================================
+user_last_action = {}
+user_attack_cooldown = {}
+
+# Настройки времени кулдаунов (в секундах)
+BUTTON_COOLDOWN = 1.0  # Задержка между любыми нажатиями кнопок (от кликеров)
+ATTACK_COOLDOWN = 300  # Задержка между атаками/шпионажем (5 минут)
+
+def is_spam(user_id: int) -> bool:
+    """Проверяет, спамит ли пользователь кнопками"""
+    now = time.time()
+    if now - user_last_action.get(user_id, 0) < BUTTON_COOLDOWN:
+        return True
+    user_last_action[user_id] = now
+    return False
+
+def get_attack_cooldown(user_id: int) -> int:
+    """Возвращает оставшееся время до следующей атаки в секундах, или 0"""
+    now = time.time()
+    passed = now - user_attack_cooldown.get(user_id, 0)
+    if passed < ATTACK_COOLDOWN:
+        return int(ATTACK_COOLDOWN - passed)
+    return 0
+
+def set_attack_cooldown(user_id: int):
+    """Обновляет таймер последней атаки"""
+    user_attack_cooldown[user_id] = time.time()
+
+# Безопасное редактирование сообщений (чтобы избежать ошибки "Message is not modified")
+async def safe_edit(message: types.Message, text: str, reply_markup=None):
+    try:
+        await message.edit_text(text, reply_markup=reply_markup)
+    except TelegramBadRequest:
+        pass
+
+# ========================================================================
 # БАЗА ДАННЫХ И МИГРАЦИИ
 # ========================================================================
 async def init_db():
     async with aiosqlite.connect(DB_NAME) as db:
-        # Основная таблица стран
         await db.execute("""
             CREATE TABLE IF NOT EXISTS countries (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -44,33 +80,23 @@ async def init_db():
                 gdp INTEGER DEFAULT 100,
                 territory INTEGER DEFAULT 10,
                 settlements INTEGER DEFAULT 1,
-                
-                -- Войска
                 infantry INTEGER DEFAULT 100,
                 cars INTEGER DEFAULT 5,
                 trucks INTEGER DEFAULT 2,
                 tanks INTEGER DEFAULT 0,
-                ships INTEGER DEFAULT 0, -- Оставлено для обратной совместимости старых сохранений
+                ships INTEGER DEFAULT 0,
                 destroyers INTEGER DEFAULT 0,
                 cruisers INTEGER DEFAULT 0,
                 battleships INTEGER DEFAULT 0,
-                
-                -- Ресурсы
                 materials INTEGER DEFAULT 1000,
                 oil INTEGER DEFAULT 500,
                 food INTEGER DEFAULT 2000,
-                
-                -- Здания
                 factories INTEGER DEFAULT 1,
                 oil_rigs INTEGER DEFAULT 1,
                 farms INTEGER DEFAULT 2,
                 bridges INTEGER DEFAULT 0,
-                
-                -- География
                 rivers INTEGER DEFAULT 0,
                 seas INTEGER DEFAULT 0,
-                
-                -- Прочее
                 laws TEXT DEFAULT 'Нет законов',
                 bunkers INTEGER DEFAULT 0,
                 spies INTEGER DEFAULT 0,
@@ -79,7 +105,6 @@ async def init_db():
             )
         """)
         
-        # Таблица альянсов
         await db.execute("""
             CREATE TABLE IF NOT EXISTS alliances (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -89,16 +114,13 @@ async def init_db():
             )
         """)
 
-        # Таблица администраторов
         await db.execute("""
             CREATE TABLE IF NOT EXISTS admins (
                 user_id INTEGER PRIMARY KEY
             )
         """)
-        # Добавляем создателя по умолчанию
         await db.execute("INSERT OR IGNORE INTO admins (user_id) VALUES (?)", (SUPER_ADMIN_ID,))
         
-        # Миграция для обновления старых сохранений (авто-добавление новых колонок)
         new_columns = [
             ("bunkers", "INTEGER DEFAULT 0"), ("spies", "INTEGER DEFAULT 0"),
             ("war_wins", "INTEGER DEFAULT 0"), ("alliance_id", "INTEGER DEFAULT 0"),
@@ -114,7 +136,7 @@ async def init_db():
             try:
                 await db.execute(f"ALTER TABLE countries ADD COLUMN {col} {col_type}")
             except aiosqlite.OperationalError:
-                pass # Колонка уже существует
+                pass
         await db.commit()
 
 async def get_db_connection():
@@ -152,22 +174,19 @@ async def is_admin(user_id: int) -> bool:
 # ФОНОВЫЕ ЗАДАЧИ (ПРОДВИНУТАЯ ЭКОНОМИКА)
 # ========================================================================
 async def economy_tick():
-    """Каждые 15 минут обновляет экономику и рассчитывает потребление/голод"""
     while True:
-        await asyncio.sleep(900) # 900 секунд = 15 минут
+        await asyncio.sleep(900) # 15 минут
         db = await get_db_connection()
         try:
             async with db.execute("SELECT * FROM countries") as cursor:
                 countries = await cursor.fetchall()
             
             for c in countries:
-                # Производство: поселения теперь дают очень много налогов (500$ за каждое)
                 prod_money = (c['settlements'] * 500) + c['gdp']
                 prod_materials = c['factories'] * 50
                 prod_oil = c['oil_rigs'] * 20
                 prod_food = c['farms'] * 100
                 
-                # Потребление: различные корабли потребляют разное количество нефти
                 cons_food = int(c['infantry'] * 1.5) + (c['spies'] * 5)
                 cons_oil = int(c['cars'] * 1 + c['trucks'] * 2 + c['tanks'] * 5 + 
                                c['destroyers'] * 10 + c['cruisers'] * 25 + c['battleships'] * 50)
@@ -242,10 +261,10 @@ def main_menu_kb():
 
 def economy_build_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🏭 Завод (5000$, 500 Мат.)", callback_data="build_factory"),
-         InlineKeyboardButton(text="🛢 Вышка (8000$, 1000 Мат.)", callback_data="build_rig")],
-        [InlineKeyboardButton(text="🌾 Ферма (3000$, 200 Мат.)", callback_data="build_farm"),
-         InlineKeyboardButton(text="🌉 Мост (2000$, 800 Мат.)", callback_data="build_bridge")],
+        [InlineKeyboardButton(text="🏭 Завод (5k$, 500 Мат.)", callback_data="build_factory"),
+         InlineKeyboardButton(text="🛢 Вышка (8k$, 1k Мат.)", callback_data="build_rig")],
+        [InlineKeyboardButton(text="🌾 Ферма (3k$, 200 Мат.)", callback_data="build_farm"),
+         InlineKeyboardButton(text="🌉 Мост (2k$, 800 Мат.)", callback_data="build_bridge")],
         [InlineKeyboardButton(text="🏘 Основать Поселение (15k$, 2k Мат., 2k Еды)", callback_data="build_settlement")],
         [InlineKeyboardButton(text="◀️ Назад", callback_data="menu_main")]
     ])
@@ -300,9 +319,6 @@ def alliance_member_kb(is_leader):
     kb.append([InlineKeyboardButton(text="◀️ Назад", callback_data="menu_main")])
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
-# ========================================================================
-# КЛАВИАТУРЫ АДМИН-ПАНЕЛИ
-# ========================================================================
 def admin_main_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📦 Бэкапы и Откаты", callback_data="adm_backups")],
@@ -354,7 +370,6 @@ def get_base_power(country):
             (country['cruisers'] * 150) + \
             (country['battleships'] * 500) + \
             (country['bunkers'] * 50)
-    # На случай старых сохранений
     if 'ships' in country and country['ships'] > 0:
         power += country['ships'] * 50
     return power
@@ -457,6 +472,9 @@ async def get_country_text(country):
 
 @dp.callback_query(F.data.startswith("menu_"))
 async def process_menus(callback: types.CallbackQuery, state: FSMContext):
+    if is_spam(callback.from_user.id): 
+        return await callback.answer("⏳ Не так быстро!", show_alert=False)
+        
     await state.clear()
     action = callback.data.split("_")[1]
     country = await fetch_one("SELECT * FROM countries WHERE owner_id = ?", (callback.from_user.id,))
@@ -466,10 +484,10 @@ async def process_menus(callback: types.CallbackQuery, state: FSMContext):
 
     if action == "profile":
         text = await get_country_text(country)
-        await callback.message.edit_text(text, reply_markup=main_menu_kb())
+        await safe_edit(callback.message, text, reply_markup=main_menu_kb())
         
     elif action == "main":
-        await callback.message.edit_text("Вы в главном штабе. Ждем указаний.", reply_markup=main_menu_kb())
+        await safe_edit(callback.message, "Вы в главном штабе. Ждем указаний.", reply_markup=main_menu_kb())
         
     elif action == "economy":
         prod_money = (country['settlements'] * 500) + country['gdp']
@@ -496,12 +514,11 @@ async def process_menus(callback: types.CallbackQuery, state: FSMContext):
             f"🥩 Еда: +{prod_food} / -{cons_food} (Итог: {prod_food - cons_food})\n\n"
             f"<i>⚠️ Новые поселения значительно увеличивают приток денег (+500$ и +200 ВВП).</i>"
         )
-        await callback.message.edit_text(text, reply_markup=economy_build_kb())
+        await safe_edit(callback.message, text, reply_markup=economy_build_kb())
 
     elif action == "army":
-        await callback.message.edit_text(
-            f"🪖 <b>Военкомат и Верфи</b>\n\n"
-            f"Доступно:\n💵 {country['budget']}$ | 🧱 {country['materials']} мат. | 🥩 {country['food']} еды", 
+        await safe_edit(callback.message, 
+            f"🪖 <b>Военкомат и Верфи</b>\n\nДоступно:\n💵 {country['budget']}$ | 🧱 {country['materials']} мат. | 🥩 {country['food']} еды", 
             reply_markup=army_kb()
         )
         
@@ -511,10 +528,7 @@ async def process_menus(callback: types.CallbackQuery, state: FSMContext):
     elif action == "alliance":
         if country['alliance_id'] == 0:
             top_alliances = await fetch_all("SELECT * FROM alliances LIMIT 5")
-            await callback.message.edit_text(
-                "🤝 <b>Дипломатия Альянсов</b>\n\nВы не состоите в альянсе.",
-                reply_markup=alliance_none_kb(top_alliances)
-            )
+            await safe_edit(callback.message, "🤝 <b>Дипломатия Альянсов</b>\n\nВы не состоите в альянсе.", reply_markup=alliance_none_kb(top_alliances))
         else:
             aly = await fetch_one("SELECT * FROM alliances WHERE id = ?", (country['alliance_id'],))
             members = await fetch_all("SELECT * FROM countries WHERE alliance_id = ?", (aly['id'],))
@@ -528,36 +542,39 @@ async def process_menus(callback: types.CallbackQuery, state: FSMContext):
                 text += f"- {m['flag']} {m['name']} ({role})\n"
                 
             is_leader = (country['owner_id'] == aly['leader_id'])
-            await callback.message.edit_text(text, reply_markup=alliance_member_kb(is_leader))
+            await safe_edit(callback.message, text, reply_markup=alliance_member_kb(is_leader))
 
     elif action == "war":
         targets = await fetch_all("SELECT * FROM countries WHERE id != ? LIMIT 10", (country['id'],))
         if not targets:
             return await callback.answer("В мире пока нет других стран для атаки!", show_alert=True)
             
-        await callback.message.edit_text(
+        await safe_edit(callback.message, 
             "⚔️ <b>Командование: Выбор цели</b>\n"
             "👤 Игроки | 🤖 NPC | 🏞 Реки | 🌊 Море\n\n"
             "<i>Для атаки требуется 200 Еды и 100 Нефти на мобилизацию!</i>",
             reply_markup=war_targets_kb(targets)
         )
+    await callback.answer()
 
 # ========================================================================
 # ХЭНДЛЕРЫ: СТРОИТЕЛЬСТВО, АЛЬЯНСЫ, ПОКУПКА
 # ========================================================================
 @dp.callback_query(F.data.startswith("build_"))
 async def process_economy_build(callback: types.CallbackQuery):
+    if is_spam(callback.from_user.id): return await callback.answer("⏳ Подождите...")
+    
     item = callback.data.split("_")[1]
     country = await fetch_one("SELECT * FROM countries WHERE owner_id = ?", (callback.from_user.id,))
     
     if item == "settlement":
         if country['budget'] < 15000 or country['materials'] < 2000 or country['food'] < 2000:
-            return await callback.answer("❌ Не хватает ресурсов для нового Поселения! Нужно 15000$, 2000 Мат., 2000 Еды.", show_alert=True)
+            return await callback.answer("❌ Нужно 15000$, 2000 Мат., 2000 Еды.", show_alert=True)
         await execute_db(
             "UPDATE countries SET budget = budget - 15000, materials = materials - 2000, food = food - 2000, settlements = settlements + 1, gdp = gdp + 200 WHERE id = ?", 
             (country['id'],)
         )
-        await callback.answer("✅ Успешно основано новое Поселение! Ваш ВВП и налоги выросли.", show_alert=True)
+        await callback.answer("✅ Основано новое Поселение!", show_alert=True)
     else:
         costs = {
             "factory": (5000, 500, "factories", "Завод"),
@@ -568,7 +585,7 @@ async def process_economy_build(callback: types.CallbackQuery):
         price_money, price_mat, db_field, name = costs[item]
         
         if country['budget'] < price_money or country['materials'] < price_mat:
-            return await callback.answer(f"❌ Недостаточно ресурсов! Нужно {price_money}$ и {price_mat} матер.", show_alert=True)
+            return await callback.answer(f"❌ Нужно {price_money}$ и {price_mat} матер.", show_alert=True)
             
         await execute_db(
             f"UPDATE countries SET budget = budget - ?, materials = materials - ?, {db_field} = {db_field} + 1 WHERE id = ?",
@@ -580,11 +597,11 @@ async def process_economy_build(callback: types.CallbackQuery):
     text = (
         f"🏭 <b>Министерство Экономики</b>\n"
         f"💵 Бюджет: {new_country['budget']:,}$ | 🧱 Матер.: {new_country['materials']:,} | 🥩 Еда: {new_country['food']:,}\n"
-        f"🏘 Поселения: {new_country['settlements']} (каждое дает +500$ к налогам)\n"
+        f"🏘 Поселения: {new_country['settlements']}\n"
         f"🏭 Заводы: {new_country['factories']} | 🛢 Вышки: {new_country['oil_rigs']} | 🌾 Фермы: {new_country['farms']}\n"
         f"🌉 Мосты: {new_country['bridges']}"
     )
-    await callback.message.edit_text(text, reply_markup=economy_build_kb())
+    await safe_edit(callback.message, text, reply_markup=economy_build_kb())
 
 @dp.callback_query(F.data == "aly_create")
 async def cmd_aly_create(callback: types.CallbackQuery, state: FSMContext):
@@ -607,10 +624,7 @@ async def aly_flag_step(message: types.Message, state: FSMContext):
     country = await fetch_one("SELECT * FROM countries WHERE owner_id = ?", (message.from_user.id,))
     
     await execute_db("UPDATE countries SET budget = budget - 10000 WHERE id = ?", (country['id'],))
-    await execute_db(
-        "INSERT INTO alliances (name, flag, leader_id) VALUES (?, ?, ?)",
-        (data['name'], flag, country['owner_id'])
-    )
+    await execute_db("INSERT INTO alliances (name, flag, leader_id) VALUES (?, ?, ?)", (data['name'], flag, country['owner_id']))
     new_aly = await fetch_one("SELECT id FROM alliances WHERE leader_id = ?", (country['owner_id'],))
     await execute_db("UPDATE countries SET alliance_id = ? WHERE id = ?", (new_aly['id'], country['id']))
     
@@ -619,18 +633,21 @@ async def aly_flag_step(message: types.Message, state: FSMContext):
 
 @dp.callback_query(F.data.startswith("aly_join_"))
 async def cmd_aly_join(callback: types.CallbackQuery):
+    if is_spam(callback.from_user.id): return await callback.answer("⏳ Подождите...")
+    
     aly_id = int(callback.data.split("_")[2])
     country = await fetch_one("SELECT * FROM countries WHERE owner_id = ?", (callback.from_user.id,))
     await execute_db("UPDATE countries SET alliance_id = ? WHERE id = ?", (aly_id, country['id']))
+    
     await callback.answer("Вы успешно вступили в Альянс!", show_alert=True)
-    await process_menus(callback, FSMContext(storage=dp.storage, key=callback.from_user.id))
+    await safe_edit(callback.message, "✅ Успешное вступление! Возврат в штаб...", reply_markup=main_menu_kb())
 
 @dp.callback_query(F.data == "aly_leave")
 async def cmd_aly_leave(callback: types.CallbackQuery):
     country = await fetch_one("SELECT * FROM countries WHERE owner_id = ?", (callback.from_user.id,))
     await execute_db("UPDATE countries SET alliance_id = 0 WHERE id = ?", (country['id'],))
     await callback.answer("Вы покинули Альянс.", show_alert=True)
-    await callback.message.edit_text("Вы покинули Альянс.", reply_markup=main_menu_kb())
+    await safe_edit(callback.message, "Вы покинули Альянс.", reply_markup=main_menu_kb())
 
 @dp.callback_query(F.data == "aly_disband")
 async def cmd_aly_disband(callback: types.CallbackQuery):
@@ -639,10 +656,12 @@ async def cmd_aly_disband(callback: types.CallbackQuery):
     await execute_db("UPDATE countries SET alliance_id = 0 WHERE alliance_id = ?", (aly_id,))
     await execute_db("DELETE FROM alliances WHERE id = ?", (aly_id,))
     await callback.answer("Альянс распущен!", show_alert=True)
-    await callback.message.edit_text("Ваш Альянс был навсегда распущен.", reply_markup=main_menu_kb())
+    await safe_edit(callback.message, "Ваш Альянс был навсегда распущен.", reply_markup=main_menu_kb())
 
 @dp.callback_query(F.data.startswith("buy_"))
 async def process_army_buy(callback: types.CallbackQuery):
+    if is_spam(callback.from_user.id): return await callback.answer("⏳ Не закупайте так быстро!")
+    
     item = callback.data.split("_")[1]
     country = await fetch_one("SELECT * FROM countries WHERE owner_id = ?", (callback.from_user.id,))
     
@@ -666,9 +685,9 @@ async def process_army_buy(callback: types.CallbackQuery):
         f"UPDATE countries SET budget = budget - ?, food = food - ?, materials = materials - ?, {item} = {item} + ? WHERE id = ?",
         (req["money"], req["food"], req["materials"], req["amount"], country['id'])
     )
-    await callback.answer(f"✅ Успешно куплено: {req['amount']} {req['name']}!", show_alert=True)
+    await callback.answer(f"✅ Успешно куплено: {req['amount']} {req['name']}!", show_alert=False)
     new_country = await fetch_one("SELECT * FROM countries WHERE id = ?", (country['id'],))
-    await callback.message.edit_text(
+    await safe_edit(callback.message, 
         f"🪖 <b>Военкомат и Верфи</b>\nДоступно:\n💵 {new_country['budget']}$ | 🧱 {new_country['materials']} мат. | 🥩 {new_country['food']} еды", 
         reply_markup=army_kb()
     )
@@ -678,6 +697,7 @@ async def process_army_buy(callback: types.CallbackQuery):
 # ========================================================================
 @dp.callback_query(F.data.startswith("prepwar_"))
 async def process_prepwar(callback: types.CallbackQuery):
+    if is_spam(callback.from_user.id): return await callback.answer("⏳")
     target_id = int(callback.data.split("_")[1])
     defender = await fetch_one("SELECT * FROM countries WHERE id = ?", (target_id,))
     
@@ -687,13 +707,19 @@ async def process_prepwar(callback: types.CallbackQuery):
     if defender['seas'] > 0:
         geo_info += f"🌊 Море. Без кораблей (эсминцев, крейсеров или линкоров) штраф -50%!\n"
 
-    await callback.message.edit_text(
+    await safe_edit(callback.message, 
         f"⚔️ <b>Подготовка к вторжению в {defender['flag']} {defender['name']}</b>\n{geo_info}\n",
         reply_markup=tactics_kb(target_id)
     )
+    await callback.answer()
 
 @dp.callback_query(F.data.startswith("spy_"))
 async def process_spy(callback: types.CallbackQuery):
+    # ПРОВЕРКА КУЛДАУНА
+    cd = get_attack_cooldown(callback.from_user.id)
+    if cd > 0:
+        return await callback.answer(f"⏳ Шпионы еще в пути! Доступно через {cd} сек.", show_alert=True)
+        
     target_id = int(callback.data.split("_")[1])
     attacker = await fetch_one("SELECT * FROM countries WHERE owner_id = ?", (callback.from_user.id,))
     defender = await fetch_one("SELECT * FROM countries WHERE id = ?", (target_id,))
@@ -702,9 +728,11 @@ async def process_spy(callback: types.CallbackQuery):
         return await callback.answer("Нет шпионов!", show_alert=True)
         
     await execute_db("UPDATE countries SET spies = spies - 1 WHERE id = ?", (attacker['id'],))
+    set_attack_cooldown(callback.from_user.id) # Ставим таймер КД
     
     if random.random() < 0.2:
-        return await callback.message.edit_text("💥 <b>Провал операции!</b>\nШпион раскрыт.", reply_markup=tactics_kb(target_id))
+        await callback.answer("Операция провалена!", show_alert=True)
+        return await safe_edit(callback.message, "💥 <b>Провал операции!</b>\nШпион раскрыт.", reply_markup=tactics_kb(target_id))
         
     def_power_est = get_base_power(defender)
     text = (
@@ -715,10 +743,16 @@ async def process_spy(callback: types.CallbackQuery):
         f"🛡 Укрепления: {defender['bunkers']} бункеров\n\n"
         f"📊 Оценочная базовая мощь: <b>{def_power_est}</b>\n"
     )
-    await callback.message.edit_text(text, reply_markup=tactics_kb(target_id))
+    await safe_edit(callback.message, text, reply_markup=tactics_kb(target_id))
+    await callback.answer()
 
 @dp.callback_query(F.data.startswith("tactic_"))
 async def process_attack(callback: types.CallbackQuery):
+    # ПРОВЕРКА КУЛДАУНА
+    cd = get_attack_cooldown(callback.from_user.id)
+    if cd > 0:
+        return await callback.answer(f"⏳ Войска на перегруппировке! Атака доступна через {cd} сек.", show_alert=True)
+
     parts = callback.data.split("_")
     tactic, target_id = parts[1], int(parts[2])
     
@@ -732,7 +766,9 @@ async def process_attack(callback: types.CallbackQuery):
         return await callback.answer("❌ Для мобилизации армии нужно 200 Еды и 100 Нефти!", show_alert=True)
         
     await execute_db("UPDATE countries SET food = food - 200, oil = oil - 100 WHERE id = ?", (attacker['id'],))
-    await callback.message.edit_text("🚀 <b>Войска пересекают границу...</b>\n\n🛰 Идет оценка обстановки...")
+    set_attack_cooldown(callback.from_user.id) # Ставим таймер КД
+    
+    await safe_edit(callback.message, "🚀 <b>Войска пересекают границу...</b>\n\n🛰 Идет оценка обстановки...")
     await asyncio.sleep(2)
 
     att_base = get_base_power(attacker)
@@ -814,10 +850,11 @@ async def process_attack(callback: types.CallbackQuery):
 
         report.append(f"\n☠️ <b>ПОРАЖЕНИЕ!</b> Наступление захлебнулось.")
 
-    await callback.message.edit_text("\n".join(report), reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ В штаб", callback_data="menu_war")]]))
+    await safe_edit(callback.message, "\n".join(report), reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ В штаб", callback_data="menu_war")]]))
+    await callback.answer()
 
 # ========================================================================
-# ХЭНДЛЕРЫ: АДМИН ПАНЕЛЬ (ПОЛНАЯ ПЕРЕРАБОТКА)
+# ХЭНДЛЕРЫ: АДМИН ПАНЕЛЬ
 # ========================================================================
 @dp.message(Command("admin"))
 async def cmd_admin(message: types.Message, state: FSMContext):
@@ -833,17 +870,17 @@ async def adm_menus(callback: types.CallbackQuery, state: FSMContext):
     action = callback.data.split("_")[1]
     
     if action == "main":
-        await callback.message.edit_text("🔧 <b>Главная Панель Администратора</b>\nВыберите раздел:", reply_markup=admin_main_kb())
+        await safe_edit(callback.message, "🔧 <b>Главная Панель Администратора</b>\nВыберите раздел:", reply_markup=admin_main_kb())
     elif action == "backups":
-        await callback.message.edit_text("📦 <b>Бэкапы и Откаты</b>\nЗдесь можно сохранить базу данных или полностью откатить мир (сброс даты).", reply_markup=admin_backups_kb())
+        await safe_edit(callback.message, "📦 <b>Бэкапы и Откаты</b>\nЗдесь можно сохранить базу данных или полностью откатить мир (сброс даты).", reply_markup=admin_backups_kb())
     elif action == "countries":
-        await callback.message.edit_text("🌍 <b>Управление Странами</b>\nСоздавайте NPC или удаляйте любые страны с карты.", reply_markup=admin_countries_kb())
+        await safe_edit(callback.message, "🌍 <b>Управление Странами</b>\nСоздавайте NPC или удаляйте любые страны с карты.", reply_markup=admin_countries_kb())
     elif action == "alliances":
-        await callback.message.edit_text("🤝 <b>Управление Альянсами</b>\nПринудительно удаляйте любые объединения.", reply_markup=admin_alliances_kb())
+        await safe_edit(callback.message, "🤝 <b>Управление Альянсами</b>\nПринудительно удаляйте любые объединения.", reply_markup=admin_alliances_kb())
     elif action == "admins":
-        await callback.message.edit_text("👮‍♂️ <b>Администраторы сервера</b>\nДобавляйте или снимайте полномочия с пользователей.", reply_markup=admin_admins_kb())
+        await safe_edit(callback.message, "👮‍♂️ <b>Администраторы сервера</b>\nДобавляйте или снимайте полномочия с пользователей.", reply_markup=admin_admins_kb())
+    await callback.answer()
 
-# ----- БЭКАПЫ -----
 @dp.callback_query(F.data == "admin_download_db")
 async def admin_download_db(callback: types.CallbackQuery):
     if not await is_admin(callback.from_user.id): return
@@ -854,12 +891,13 @@ async def admin_download_db(callback: types.CallbackQuery):
 @dp.callback_query(F.data == "admin_upload_db")
 async def admin_upload_db_start(callback: types.CallbackQuery, state: FSMContext):
     if not await is_admin(callback.from_user.id): return
-    await callback.message.edit_text(
+    await safe_edit(callback.message, 
         "⚠️ <b>ВНИМАНИЕ: ОТКАТ МИРА!</b>\n\n"
         "Загрузка нового файла <code>.db</code> <b>ПОЛНОСТЬЮ ОТКАТИТ ДАТУ ПОЛЬЗОВАТЕЛЕЙ</b> на момент сохранения!\n"
-        "Отправь мне файл базы данных (любое название, главное формат файла) в этот чат:"
+        "Отправь мне файл базы данных в этот чат:"
     )
     await state.set_state(AdminState.waiting_for_db)
+    await callback.answer()
 
 @dp.message(AdminState.waiting_for_db, F.document)
 async def admin_upload_db_finish(message: types.Message, state: FSMContext):
@@ -869,12 +907,12 @@ async def admin_upload_db_finish(message: types.Message, state: FSMContext):
     await message.answer("✅ <b>МИР УСПЕШНО ОТКАТИЛСЯ И ВОССТАНОВЛЕН ИЗ ФАЙЛА!</b>\nВсе данные пользователей сброшены на загруженные.", reply_markup=admin_main_kb())
     await state.clear()
 
-# ----- СТРАНЫ -----
 @dp.callback_query(F.data == "admin_create_npc")
 async def admin_npc_start(callback: types.CallbackQuery, state: FSMContext):
     if not await is_admin(callback.from_user.id): return
     await callback.message.answer("Введите название NPC-страны:")
     await state.set_state(AdminState.npc_name)
+    await callback.answer()
 
 @dp.message(AdminState.npc_name)
 async def admin_npc_name(message: types.Message, state: FSMContext):
@@ -909,6 +947,7 @@ async def admin_del_country_start(callback: types.CallbackQuery, state: FSMConte
     if not await is_admin(callback.from_user.id): return
     await callback.message.answer("🗑 <b>Удаление Страны</b>\n\nОтправьте мне <b>ID страны</b> для её полного удаления с сервера (узнать ID можно в списке стран):")
     await state.set_state(AdminState.del_country)
+    await callback.answer()
 
 @dp.message(AdminState.del_country)
 async def admin_del_country_finish(message: types.Message, state: FSMContext):
@@ -924,7 +963,6 @@ async def admin_del_country_finish(message: types.Message, state: FSMContext):
         await message.answer("❌ Пожалуйста, отправьте только число (ID).")
     await state.clear()
 
-# ----- АЛЬЯНСЫ -----
 @dp.callback_query(F.data == "admin_list_alliances")
 async def admin_list_all(callback: types.CallbackQuery):
     if not await is_admin(callback.from_user.id): return
@@ -940,6 +978,7 @@ async def admin_del_aly_start(callback: types.CallbackQuery, state: FSMContext):
     if not await is_admin(callback.from_user.id): return
     await callback.message.answer("🗑 <b>Удаление Альянса</b>\nОтправьте <b>ID альянса</b>:")
     await state.set_state(AdminState.del_alliance)
+    await callback.answer()
 
 @dp.message(AdminState.del_alliance)
 async def admin_del_aly_finish(message: types.Message, state: FSMContext):
@@ -955,7 +994,6 @@ async def admin_del_aly_finish(message: types.Message, state: FSMContext):
         await message.answer("❌ Нужно число (ID).")
     await state.clear()
 
-# ----- АДМИНЫ -----
 @dp.callback_query(F.data == "admin_list_admins")
 async def admin_list_adm(callback: types.CallbackQuery):
     if not await is_admin(callback.from_user.id): return
@@ -972,6 +1010,7 @@ async def admin_add_start(callback: types.CallbackQuery, state: FSMContext):
     if not await is_admin(callback.from_user.id): return
     await callback.message.answer("➕ <b>Назначение Админа</b>\nПришлите Telegram ID пользователя:")
     await state.set_state(AdminState.add_admin)
+    await callback.answer()
 
 @dp.message(AdminState.add_admin)
 async def admin_add_finish(message: types.Message, state: FSMContext):
@@ -989,6 +1028,7 @@ async def admin_rem_start(callback: types.CallbackQuery, state: FSMContext):
     if not await is_admin(callback.from_user.id): return
     await callback.message.answer("➖ <b>Снятие Админа</b>\nПришлите Telegram ID пользователя:")
     await state.set_state(AdminState.rem_admin)
+    await callback.answer()
 
 @dp.message(AdminState.rem_admin)
 async def admin_rem_finish(message: types.Message, state: FSMContext):
