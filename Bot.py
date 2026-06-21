@@ -4,6 +4,8 @@ import random
 from datetime import datetime
 
 from aiogram import Bot, Dispatcher, F, types
+# Импортируем DefaultBotProperties для исправления ошибки инициализации
+from aiogram.client.default import DefaultBotProperties
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
@@ -13,12 +15,17 @@ import aiosqlite
 # ========================================================================
 # КОНФИГУРАЦИЯ БОТА
 # ========================================================================
-BOT_TOKEN = "8596473788:AAGrGjeH2Dq_PHJQdmnUcE8OV-xt6t1cEIs" # Токен бота
-SUPER_ADMIN_ID = 5341904332 # Твой Telegram ID (Создатель, которого нельзя удалить)
+BOT_TOKEN = "8596473788:AAGrGjeH2Dq_PHJQdmnUcE8OV-xt6t1cEIs"
+SUPER_ADMIN_ID = 5341904332 
 DB_NAME = "database.db"
 
 logging.basicConfig(level=logging.INFO)
-bot = Bot(token=BOT_TOKEN, parse_mode="HTML")
+
+# ИСПРАВЛЕНИЕ: Используем DefaultBotProperties вместо прямого parse_mode
+bot = Bot(
+    token=BOT_TOKEN, 
+    default=DefaultBotProperties(parse_mode="HTML")
+)
 dp = Dispatcher()
 
 # ========================================================================
@@ -43,7 +50,10 @@ async def init_db():
                 cars INTEGER DEFAULT 5,
                 trucks INTEGER DEFAULT 2,
                 tanks INTEGER DEFAULT 0,
-                ships INTEGER DEFAULT 0,
+                ships INTEGER DEFAULT 0, -- Оставлено для обратной совместимости старых сохранений
+                destroyers INTEGER DEFAULT 0,
+                cruisers INTEGER DEFAULT 0,
+                battleships INTEGER DEFAULT 0,
                 
                 -- Ресурсы
                 materials INTEGER DEFAULT 1000,
@@ -88,15 +98,17 @@ async def init_db():
         # Добавляем создателя по умолчанию
         await db.execute("INSERT OR IGNORE INTO admins (user_id) VALUES (?)", (SUPER_ADMIN_ID,))
         
-        # Миграция для обновления старых сохранений
+        # Миграция для обновления старых сохранений (авто-добавление новых колонок)
         new_columns = [
             ("bunkers", "INTEGER DEFAULT 0"), ("spies", "INTEGER DEFAULT 0"),
             ("war_wins", "INTEGER DEFAULT 0"), ("alliance_id", "INTEGER DEFAULT 0"),
-            ("ships", "INTEGER DEFAULT 0"), ("materials", "INTEGER DEFAULT 1000"),
-            ("oil", "INTEGER DEFAULT 500"), ("food", "INTEGER DEFAULT 2000"),
-            ("factories", "INTEGER DEFAULT 1"), ("oil_rigs", "INTEGER DEFAULT 1"),
-            ("farms", "INTEGER DEFAULT 2"), ("bridges", "INTEGER DEFAULT 0"),
-            ("rivers", "INTEGER DEFAULT 0"), ("seas", "INTEGER DEFAULT 0")
+            ("ships", "INTEGER DEFAULT 0"), ("destroyers", "INTEGER DEFAULT 0"),
+            ("cruisers", "INTEGER DEFAULT 0"), ("battleships", "INTEGER DEFAULT 0"),
+            ("materials", "INTEGER DEFAULT 1000"), ("oil", "INTEGER DEFAULT 500"), 
+            ("food", "INTEGER DEFAULT 2000"), ("factories", "INTEGER DEFAULT 1"), 
+            ("oil_rigs", "INTEGER DEFAULT 1"), ("farms", "INTEGER DEFAULT 2"), 
+            ("bridges", "INTEGER DEFAULT 0"), ("rivers", "INTEGER DEFAULT 0"), 
+            ("seas", "INTEGER DEFAULT 0")
         ]
         for col, col_type in new_columns:
             try:
@@ -149,13 +161,16 @@ async def economy_tick():
                 countries = await cursor.fetchall()
             
             for c in countries:
-                prod_money = (c['settlements'] * 100) + c['gdp']
+                # Производство: поселения теперь дают очень много налогов (500$ за каждое)
+                prod_money = (c['settlements'] * 500) + c['gdp']
                 prod_materials = c['factories'] * 50
                 prod_oil = c['oil_rigs'] * 20
                 prod_food = c['farms'] * 100
                 
+                # Потребление: различные корабли потребляют разное количество нефти
                 cons_food = int(c['infantry'] * 1.5) + (c['spies'] * 5)
-                cons_oil = int(c['cars'] * 1 + c['trucks'] * 2 + c['tanks'] * 5 + c['ships'] * 15)
+                cons_oil = int(c['cars'] * 1 + c['trucks'] * 2 + c['tanks'] * 5 + 
+                               c['destroyers'] * 10 + c['cruisers'] * 25 + c['battleships'] * 50)
                 
                 new_budget = c['budget'] + prod_money
                 new_materials = c['materials'] + prod_materials
@@ -227,21 +242,24 @@ def main_menu_kb():
 
 def economy_build_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🏭 Завод (5000$, 500 Матер.)", callback_data="build_factory")],
-        [InlineKeyboardButton(text="🛢 Вышка (8000$, 1000 Матер.)", callback_data="build_rig")],
-        [InlineKeyboardButton(text="🌾 Ферма (3000$, 200 Матер.)", callback_data="build_farm")],
-        [InlineKeyboardButton(text="🌉 Понтонный мост (2000$, 800 Матер.)", callback_data="build_bridge")],
+        [InlineKeyboardButton(text="🏭 Завод (5000$, 500 Мат.)", callback_data="build_factory"),
+         InlineKeyboardButton(text="🛢 Вышка (8000$, 1000 Мат.)", callback_data="build_rig")],
+        [InlineKeyboardButton(text="🌾 Ферма (3000$, 200 Мат.)", callback_data="build_farm"),
+         InlineKeyboardButton(text="🌉 Мост (2000$, 800 Мат.)", callback_data="build_bridge")],
+        [InlineKeyboardButton(text="🏘 Основать Поселение (15k$, 2k Мат., 2k Еды)", callback_data="build_settlement")],
         [InlineKeyboardButton(text="◀️ Назад", callback_data="menu_main")]
     ])
 
 def army_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🪖 10 Пехоты (100$, 50 Еды)", callback_data="buy_infantry"),
-         InlineKeyboardButton(text="🚙 1 Авто (300$, 100 Матер.)", callback_data="buy_cars")],
-        [InlineKeyboardButton(text="🚛 1 Груз. (500$, 200 Матер.)", callback_data="buy_trucks"),
-         InlineKeyboardButton(text="🚜 1 Танк (2000$, 1000 Матер.)", callback_data="buy_tanks")],
-        [InlineKeyboardButton(text="⛴ 1 Корабль (5000$, 2000 Матер.)", callback_data="buy_ships"),
-         InlineKeyboardButton(text="🛡 1 Бункер (3000$, 1500 Матер.)", callback_data="buy_bunkers")],
+        [InlineKeyboardButton(text="🪖 10 Пехоты (100$)", callback_data="buy_infantry"),
+         InlineKeyboardButton(text="🚙 1 Авто (300$)", callback_data="buy_cars")],
+        [InlineKeyboardButton(text="🚛 1 Груз. (500$)", callback_data="buy_trucks"),
+         InlineKeyboardButton(text="🚜 1 Танк (2000$)", callback_data="buy_tanks")],
+        [InlineKeyboardButton(text="🚤 Эсминец (5k$)", callback_data="buy_destroyers"),
+         InlineKeyboardButton(text="🛳 Крейсер (15k$)", callback_data="buy_cruisers")],
+        [InlineKeyboardButton(text="⛴ Линкор (40k$)", callback_data="buy_battleships"),
+         InlineKeyboardButton(text="🛡 Бункер (3000$)", callback_data="buy_bunkers")],
         [InlineKeyboardButton(text="🕵️‍♂️ 1 Шпион (1000$)", callback_data="buy_spies"),
          InlineKeyboardButton(text="◀️ Назад", callback_data="menu_main")]
     ])
@@ -332,8 +350,13 @@ def get_base_power(country):
             (country['cars'] * 3) + \
             (country['trucks'] * 5) + \
             (country['tanks'] * 20) + \
-            (country['ships'] * 50) + \
+            (country['destroyers'] * 50) + \
+            (country['cruisers'] * 150) + \
+            (country['battleships'] * 500) + \
             (country['bunkers'] * 50)
+    # На случай старых сохранений
+    if 'ships' in country and country['ships'] > 0:
+        power += country['ships'] * 50
     return power
 
 async def get_alliance_support(alliance_id, exclude_country_id):
@@ -420,14 +443,15 @@ async def get_country_text(country):
         f"🧱 <b>Материалы:</b> {country['materials']:,} | 🛢 <b>Нефть:</b> {country['oil']:,} | 🥩 <b>Еда:</b> {country['food']:,}\n"
         f"📈 <b>Базовый ВВП:</b> {country['gdp']:,}$\n"
         f"🗺 <b>Территория:</b> {country['territory']:,} км²\n"
-        f"🏘 <b>Поселения:</b> {country['settlements']}\n"
+        f"🏘 <b>Поселения (Города):</b> {country['settlements']}\n"
         f"➖➖➖➖➖➖➖➖➖➖\n"
         f"🏭 Заводы: {country['factories']} | 🛢 Вышки: {country['oil_rigs']} | 🌾 Фермы: {country['farms']}\n"
         f"🌉 Понтонные мосты (для атак): {country['bridges']}\n"
         f"➖➖➖➖➖➖➖➖➖➖\n"
-        f"⚔️ <b>Армия:</b>\n"
+        f"⚔️ <b>Армия и Флот:</b>\n"
         f"🪖 Пехота: {country['infantry']} | 🚙 Авто: {country['cars']} | 🚛 Груз: {country['trucks']}\n"
-        f"🚜 Танки: {country['tanks']} | ⛴ Корабли: {country['ships']}\n"
+        f"🚜 Танки: {country['tanks']}\n"
+        f"🚤 Эсминцы: {country['destroyers']} | 🛳 Крейсеры: {country['cruisers']} | ⛴ Линкоры: {country['battleships']}\n"
         f"🛡 Бункеры: {country['bunkers']} | 🕵️‍♂️ Шпионы: {country['spies']}"
     )
 
@@ -448,13 +472,14 @@ async def process_menus(callback: types.CallbackQuery, state: FSMContext):
         await callback.message.edit_text("Вы в главном штабе. Ждем указаний.", reply_markup=main_menu_kb())
         
     elif action == "economy":
-        prod_money = (country['settlements'] * 100) + country['gdp']
+        prod_money = (country['settlements'] * 500) + country['gdp']
         prod_materials = country['factories'] * 50
         prod_oil = country['oil_rigs'] * 20
         prod_food = country['farms'] * 100
         
         cons_food = int(country['infantry'] * 1.5) + (country['spies'] * 5)
-        cons_oil = int(country['cars'] * 1 + country['trucks'] * 2 + country['tanks'] * 5 + country['ships'] * 15)
+        cons_oil = int(country['cars'] * 1 + country['trucks'] * 2 + country['tanks'] * 5 + 
+                       country['destroyers'] * 10 + country['cruisers'] * 25 + country['battleships'] * 50)
         
         text = (
             f"🏭 <b>Министерство Экономики</b>\n"
@@ -469,7 +494,7 @@ async def process_menus(callback: types.CallbackQuery, state: FSMContext):
             f"🧱 Материалы: +{prod_materials}\n"
             f"🛢 Нефть: +{prod_oil} / -{cons_oil} (Итог: {prod_oil - cons_oil})\n"
             f"🥩 Еда: +{prod_food} / -{cons_food} (Итог: {prod_food - cons_food})\n\n"
-            f"<i>⚠️ Держите баланс еды и нефти положительным, иначе армия начнет вымирать и техника сломается!</i>"
+            f"<i>⚠️ Новые поселения значительно увеличивают приток денег (+500$ и +200 ВВП).</i>"
         )
         await callback.message.edit_text(text, reply_markup=economy_build_kb())
 
@@ -525,27 +550,37 @@ async def process_economy_build(callback: types.CallbackQuery):
     item = callback.data.split("_")[1]
     country = await fetch_one("SELECT * FROM countries WHERE owner_id = ?", (callback.from_user.id,))
     
-    costs = {
-        "factory": (5000, 500, "factories", "Завод"),
-        "rig": (8000, 1000, "oil_rigs", "Нефтевышка"),
-        "farm": (3000, 200, "farms", "Ферма"),
-        "bridge": (2000, 800, "bridges", "Понтонный мост")
-    }
-    price_money, price_mat, db_field, name = costs[item]
-    
-    if country['budget'] < price_money or country['materials'] < price_mat:
-        return await callback.answer(f"❌ Недостаточно ресурсов! Нужно {price_money}$ и {price_mat} матер.", show_alert=True)
+    if item == "settlement":
+        if country['budget'] < 15000 or country['materials'] < 2000 or country['food'] < 2000:
+            return await callback.answer("❌ Не хватает ресурсов для нового Поселения! Нужно 15000$, 2000 Мат., 2000 Еды.", show_alert=True)
+        await execute_db(
+            "UPDATE countries SET budget = budget - 15000, materials = materials - 2000, food = food - 2000, settlements = settlements + 1, gdp = gdp + 200 WHERE id = ?", 
+            (country['id'],)
+        )
+        await callback.answer("✅ Успешно основано новое Поселение! Ваш ВВП и налоги выросли.", show_alert=True)
+    else:
+        costs = {
+            "factory": (5000, 500, "factories", "Завод"),
+            "rig": (8000, 1000, "oil_rigs", "Нефтевышка"),
+            "farm": (3000, 200, "farms", "Ферма"),
+            "bridge": (2000, 800, "bridges", "Понтонный мост")
+        }
+        price_money, price_mat, db_field, name = costs[item]
         
-    await execute_db(
-        f"UPDATE countries SET budget = budget - ?, materials = materials - ?, {db_field} = {db_field} + 1 WHERE id = ?",
-        (price_money, price_mat, country['id'])
-    )
-    await callback.answer(f"✅ Успешно построено: {name}!", show_alert=True)
+        if country['budget'] < price_money or country['materials'] < price_mat:
+            return await callback.answer(f"❌ Недостаточно ресурсов! Нужно {price_money}$ и {price_mat} матер.", show_alert=True)
+            
+        await execute_db(
+            f"UPDATE countries SET budget = budget - ?, materials = materials - ?, {db_field} = {db_field} + 1 WHERE id = ?",
+            (price_money, price_mat, country['id'])
+        )
+        await callback.answer(f"✅ Успешно построено: {name}!", show_alert=True)
     
     new_country = await fetch_one("SELECT * FROM countries WHERE id = ?", (country['id'],))
     text = (
         f"🏭 <b>Министерство Экономики</b>\n"
-        f"💵 Бюджет: {new_country['budget']:,}$ | 🧱 Матер.: {new_country['materials']:,}\n"
+        f"💵 Бюджет: {new_country['budget']:,}$ | 🧱 Матер.: {new_country['materials']:,} | 🥩 Еда: {new_country['food']:,}\n"
+        f"🏘 Поселения: {new_country['settlements']} (каждое дает +500$ к налогам)\n"
         f"🏭 Заводы: {new_country['factories']} | 🛢 Вышки: {new_country['oil_rigs']} | 🌾 Фермы: {new_country['farms']}\n"
         f"🌉 Мосты: {new_country['bridges']}"
     )
@@ -616,7 +651,9 @@ async def process_army_buy(callback: types.CallbackQuery):
         "cars": {"money": 300, "food": 0, "materials": 100, "amount": 1, "name": "Авто"},
         "trucks": {"money": 500, "food": 0, "materials": 200, "amount": 1, "name": "Грузовик"},
         "tanks": {"money": 2000, "food": 0, "materials": 1000, "amount": 1, "name": "Танк"},
-        "ships": {"money": 5000, "food": 0, "materials": 2000, "amount": 1, "name": "Корабль"},
+        "destroyers": {"money": 5000, "food": 0, "materials": 2000, "amount": 1, "name": "Эсминец"},
+        "cruisers": {"money": 15000, "food": 0, "materials": 5000, "amount": 1, "name": "Крейсер"},
+        "battleships": {"money": 40000, "food": 0, "materials": 15000, "amount": 1, "name": "Линкор"},
         "bunkers": {"money": 3000, "food": 0, "materials": 1500, "amount": 1, "name": "Бункер"},
         "spies": {"money": 1000, "food": 0, "materials": 0, "amount": 1, "name": "Шпион"}
     }
@@ -632,7 +669,7 @@ async def process_army_buy(callback: types.CallbackQuery):
     await callback.answer(f"✅ Успешно куплено: {req['amount']} {req['name']}!", show_alert=True)
     new_country = await fetch_one("SELECT * FROM countries WHERE id = ?", (country['id'],))
     await callback.message.edit_text(
-        f"🪖 <b>Военкомат</b>\nДоступно:\n💵 {new_country['budget']}$ | 🧱 {new_country['materials']} мат. | 🥩 {new_country['food']} еды", 
+        f"🪖 <b>Военкомат и Верфи</b>\nДоступно:\n💵 {new_country['budget']}$ | 🧱 {new_country['materials']} мат. | 🥩 {new_country['food']} еды", 
         reply_markup=army_kb()
     )
 
@@ -648,7 +685,7 @@ async def process_prepwar(callback: types.CallbackQuery):
     if defender['rivers'] > 0:
         geo_info += f"🏞 Реки ({defender['rivers']}). Нужны понтонные мосты.\n"
     if defender['seas'] > 0:
-        geo_info += f"🌊 Море. Без кораблей штраф -50%!\n"
+        geo_info += f"🌊 Море. Без кораблей (эсминцев, крейсеров или линкоров) штраф -50%!\n"
 
     await callback.message.edit_text(
         f"⚔️ <b>Подготовка к вторжению в {defender['flag']} {defender['name']}</b>\n{geo_info}\n",
@@ -674,7 +711,7 @@ async def process_spy(callback: types.CallbackQuery):
         f"🕵️‍♂️ <b>Секретный рапорт по {defender['flag']} {defender['name']}</b>:\n\n"
         f"💰 Бюджет: ~{defender['budget']}$ | 🛢 Нефть: {defender['oil']}\n"
         f"🪖 Наземные: {defender['infantry']} пехоты, {defender['tanks']} танков\n"
-        f"⛴ Флот: {defender['ships']} кораблей\n"
+        f"⛴ Флот: {defender['destroyers']} Эсминцев | {defender['cruisers']} Крейсеров | {defender['battleships']} Линкоров\n"
         f"🛡 Укрепления: {defender['bunkers']} бункеров\n\n"
         f"📊 Оценочная базовая мощь: <b>{def_power_est}</b>\n"
     )
@@ -720,11 +757,12 @@ async def process_attack(callback: types.CallbackQuery):
             report.append(f"🏞 <b>Катастрофа на переправе!</b> Штраф атаки: -30%!")
             
     if defender['seas'] > 0:
-        if attacker['ships'] > 0:
-            report.append(f"⛴ Ваш флот прикрыл десант!")
+        has_navy = (attacker['destroyers'] > 0 or attacker['cruisers'] > 0 or attacker['battleships'] > 0 or attacker.get('ships', 0) > 0)
+        if has_navy:
+            report.append(f"⛴ Ваш флот успешно прикрыл десант и подавил береговую оборону врага!")
         else:
             att_total = int(att_total * 0.50)
-            report.append(f"🌊 <b>Смертельный десант!</b> Нет флота. Штраф атаки: -50%!")
+            report.append(f"🌊 <b>Смертельный десант!</b> У вас нет флота. Вражеская береговая охрана уничтожила половину десанта. Штраф атаки: -50%!")
 
     def_total = def_base + def_ally_support
     att_mult = 1.0 + (min(attacker['war_wins'], 50) * 0.01)
@@ -850,8 +888,8 @@ async def admin_npc_flag(message: types.Message, state: FSMContext):
     data = await state.get_data()
     rivers, seas = random.randint(0, 3), random.randint(0, 1)
     await execute_db(
-        """INSERT INTO countries (name, flag, budget, gdp, territory, infantry, tanks, bunkers, materials, oil, food, rivers, seas) 
-           VALUES (?, ?, 15000, 500, 50, 1000, 25, 5, 5000, 5000, 5000, ?, ?)""",
+        """INSERT INTO countries (name, flag, budget, gdp, territory, infantry, tanks, destroyers, bunkers, materials, oil, food, rivers, seas) 
+           VALUES (?, ?, 15000, 500, 50, 1000, 25, 2, 5, 5000, 5000, 5000, ?, ?)""",
         (data['name'], flag, rivers, seas)
     )
     await message.answer(f"✅ NPC-страна <b>{flag} {data['name']}</b> добавлена на карту!")
