@@ -39,6 +39,7 @@ BUTTON_COOLDOWN = 1.0
 ATTACK_COOLDOWN = 300  
 
 def is_spam(user_id: int) -> bool:
+    """Проверяет, превысил ли пользователь лимит частоты нажатий."""
     now = time.time()
     if now - user_last_action.get(user_id, 0) < BUTTON_COOLDOWN:
         return True
@@ -46,6 +47,7 @@ def is_spam(user_id: int) -> bool:
     return False
 
 def get_attack_cooldown(user_id: int) -> int:
+    """Возвращает оставшееся время кулдауна атаки."""
     now = time.time()
     passed = now - user_attack_cooldown.get(user_id, 0)
     if passed < ATTACK_COOLDOWN:
@@ -53,6 +55,7 @@ def get_attack_cooldown(user_id: int) -> int:
     return 0
 
 def set_attack_cooldown(user_id: int):
+    """Устанавливает кулдаун атаки для пользователя."""
     user_attack_cooldown[user_id] = time.time()
 
 async def safe_edit(message: types.Message, text: str, reply_markup=None, photo_id=None):
@@ -70,11 +73,16 @@ async def safe_edit(message: types.Message, text: str, reply_markup=None, photo_
                 await message.answer(text, reply_markup=reply_markup, parse_mode="HTML")
             else:
                 await message.edit_text(text, reply_markup=reply_markup, parse_mode="HTML")
-    except TelegramBadRequest:
-        pass
+    except TelegramBadRequest as e:
+        if "message is not modified" in str(e).lower():
+            pass
+        else:
+            logging.error(f"Telegram API Error: {e}")
 
 def df(flag: str) -> str:
     """Отображает иконку картинки, если флаг - это фото, иначе сам эмодзи-флаг"""
+    if not flag:
+        return "🏳️"
     return "🖼" if flag.startswith("photo:") else flag
 
 # ========================================================================
@@ -279,24 +287,34 @@ async def get_db_connection():
     return db
 
 async def fetch_one(query, params=()):
+    """Возвращает строку в виде словаря dict для предотвращения AttributeError в aiogram."""
     db = await get_db_connection()
-    async with db.execute(query, params) as cursor:
-        result = await cursor.fetchone()
-    await db.close()
-    return result
+    try:
+        async with db.execute(query, params) as cursor:
+            result = await cursor.fetchone()
+            if result:
+                return dict(result)
+            return None
+    finally:
+        await db.close()
 
 async def fetch_all(query, params=()):
+    """Возвращает список словарей dict."""
     db = await get_db_connection()
-    async with db.execute(query, params) as cursor:
-        result = await cursor.fetchall()
-    await db.close()
-    return result
+    try:
+        async with db.execute(query, params) as cursor:
+            result = await cursor.fetchall()
+            return [dict(row) for row in result]
+    finally:
+        await db.close()
 
 async def execute_db(query, params=()):
     db = await get_db_connection()
-    await db.execute(query, params)
-    await db.commit()
-    await db.close()
+    try:
+        await db.execute(query, params)
+        await db.commit()
+    finally:
+        await db.close()
 
 async def is_admin(user_id: int) -> bool:
     if user_id == SUPER_ADMIN_ID:
@@ -313,8 +331,9 @@ async def update_username(user_id: int, username: str):
 # ========================================================================
 def calc_economy_rates(c):
     """Вычисляет притоки, оттоки и боевые модификаторы на основе законов и правления"""
-    gov = c['gov_type']
-    laws = [l for l in c['active_laws'].split(',') if l]
+    gov = c.get('gov_type', 'Не выбрано')
+    active_laws = c.get('active_laws') or ''
+    laws = [l for l in active_laws.split(',') if l]
     
     mod_budget, mod_materials, mod_food_prod, mod_food_cons, mod_oil, mod_citizens = 1.0, 1.0, 1.0, 1.0, 1.0, 1.0
     combat_att_mod, combat_def_mod = 1.0, 1.0
@@ -336,53 +355,50 @@ def calc_economy_rates(c):
     if "law_luxury_tax" in laws: mod_budget += 0.20
     if "law_closed_borders" in laws: combat_def_mod += 0.15; mod_budget -= 0.10
 
-    c_dict = dict(c)
-
-    prod_money = int(((c_dict.get('settlements',0) * 500) + c_dict.get('gdp',100)) * mod_budget)
-    prod_materials = int((c_dict.get('factories',0) * 150) * mod_materials)
+    prod_money = int(((c.get('settlements', 1) * 500) + c.get('gdp', 100)) * mod_budget)
+    prod_materials = int((c.get('factories', 0) * 150) * mod_materials)
     
     # Новые производства
-    prod_steel = int((c_dict.get('steel_mills',0) * 50) * mod_materials)
-    prod_electronics = int((c_dict.get('tech_factories',0) * 15) * mod_materials)
+    prod_steel = int((c.get('steel_mills', 0) * 50) * mod_materials)
+    prod_electronics = int((c.get('tech_factories', 0) * 15) * mod_materials)
     
-    prod_oil = int((c_dict.get('oil_rigs',0) * 100) * mod_oil)
-    prod_food = int((c_dict.get('farms',0) * 300) * mod_food_prod)
+    prod_oil = int((c.get('oil_rigs', 0) * 100) * mod_oil)
+    prod_food = int((c.get('farms', 0) * 300) * mod_food_prod)
     
     cons_food = int((
-        int(c_dict.get('infantry',0) * 1.5) + 
-        (c_dict.get('machine_guns',0)*1) + 
-        (c_dict.get('mortars',0)*2) + 
-        (c_dict.get('artillery',0)*2) + 
-        (c_dict.get('aa_guns',0)*1) + 
-        (c_dict.get('sam_systems',0)*3) + 
-        (c_dict.get('spies',0) * 5) + 
-        int(c_dict.get('citizens',0) * 0.05)
+        int(c.get('infantry', 0) * 1.5) + 
+        (c.get('machine_guns', 0) * 1) + 
+        (c.get('mortars', 0) * 2) + 
+        (c.get('artillery', 0) * 2) + 
+        (c.get('aa_guns', 0) * 1) + 
+        (c.get('sam_systems', 0) * 3) + 
+        (c.get('spies', 0) * 5) + 
+        int(c.get('citizens', 0) * 0.05)
     ) * mod_food_cons)
     
     cons_oil = int(
-        c_dict.get('cars',0) * 0.5 + 
-        c_dict.get('hummers',0) * 1 + 
-        c_dict.get('military_cars',0) * 2 + 
-        c_dict.get('trucks',0) * 1 + 
-        c_dict.get('tanks',0) * 3 + 
-        c_dict.get('boats',0) * 1 + 
-        c_dict.get('submarines', 0) * 4 + 
-        c_dict.get('corvettes', 0) * 3 +
-        c_dict.get('destroyers',0) * 5 + 
-        c_dict.get('cruisers',0) * 10 + 
-        c_dict.get('battleships',0) * 20 +
-        c_dict.get('carriers', 0) * 50 +
+        c.get('cars', 0) * 0.5 + 
+        c.get('hummers', 0) * 1 + 
+        c.get('military_cars', 0) * 2 + 
+        c.get('trucks', 0) * 1 + 
+        c.get('tanks', 0) * 3 + 
+        c.get('boats', 0) * 1 + 
+        c.get('submarines', 0) * 4 + 
+        c.get('corvettes', 0) * 3 +
+        c.get('destroyers', 0) * 5 + 
+        c.get('cruisers', 0) * 10 + 
+        c.get('battleships', 0) * 20 +
+        c.get('carriers', 0) * 50 +
         # Авиация и дроны
-        c_dict.get('fighters', 0) * 5 +
-        c_dict.get('bombers', 0) * 10 +
-        c_dict.get('helicopters', 0) * 3 +
-        c_dict.get('uavs', 0) * 1 +
-        c_dict.get('jet_uavs', 0) * 3 +
-        c_dict.get('baba_yaga', 0) * 1
-        # ФПВ не потребляют нефть, они батареечные
+        c.get('fighters', 0) * 5 +
+        c.get('bombers', 0) * 10 +
+        c.get('helicopters', 0) * 3 +
+        c.get('uavs', 0) * 1 +
+        c.get('jet_uavs', 0) * 3 +
+        c.get('baba_yaga', 0) * 1
     )
     
-    citizens_base_growth = int(c_dict.get('citizens',0) * 0.01) + (c_dict.get('settlements',0) * 50)
+    citizens_base_growth = int(c.get('citizens', 10000) * 0.01) + (c.get('settlements', 1) * 50)
     actual_growth = int(citizens_base_growth * mod_citizens)
     
     return {
@@ -402,15 +418,16 @@ async def economy_tick():
                 countries = await cursor.fetchall()
             
             for c in countries:
-                rates = calc_economy_rates(c)
+                c_dict = dict(c)
+                rates = calc_economy_rates(c_dict)
                 
-                new_budget = c['budget'] + rates['prod_money']
-                new_materials = c['materials'] + rates['prod_materials']
-                new_steel = c.get('steel', 0) + rates['prod_steel']
-                new_electronics = c.get('electronics', 0) + rates['prod_electronics']
+                new_budget = c_dict['budget'] + rates['prod_money']
+                new_materials = c_dict['materials'] + rates['prod_materials']
+                new_steel = c_dict.get('steel', 0) + rates['prod_steel']
+                new_electronics = c_dict.get('electronics', 0) + rates['prod_electronics']
                 
-                new_food = c['food'] + rates['prod_food'] - rates['cons_food']
-                new_oil = c['oil'] + rates['prod_oil'] - rates['cons_oil']
+                new_food = c_dict['food'] + rates['prod_food'] - rates['cons_food']
+                new_oil = c_dict['oil'] + rates['prod_oil'] - rates['cons_oil']
                 
                 infantry_penalty = 0
                 vehicle_penalty = 0
@@ -424,12 +441,11 @@ async def economy_tick():
                     vehicle_penalty = abs(new_oil) // 5 
                     new_oil = 0
                 
-                new_citizens = max(0, c['citizens'] + rates['growth_cit'] - citizens_penalty)
-                final_infantry = max(0, c['infantry'] - infantry_penalty)
-                final_cars = max(0, c['cars'] - vehicle_penalty)
-                final_tanks = max(0, c['tanks'] - (vehicle_penalty // 2))
-                # Штраф бьет и по авиации при нехватке
-                final_fighters = max(0, c.get('fighters',0) - (vehicle_penalty // 3))
+                new_citizens = max(0, c_dict['citizens'] + rates['growth_cit'] - citizens_penalty)
+                final_infantry = max(0, c_dict['infantry'] - infantry_penalty)
+                final_cars = max(0, c_dict['cars'] - vehicle_penalty)
+                final_tanks = max(0, c_dict['tanks'] - (vehicle_penalty // 2))
+                final_fighters = max(0, c_dict.get('fighters', 0) - (vehicle_penalty // 3))
                 
                 await db.execute("""
                     UPDATE countries 
@@ -437,7 +453,7 @@ async def economy_tick():
                         infantry = ?, cars = ?, tanks = ?, fighters = ?
                     WHERE id = ?
                 """, (new_budget, new_materials, new_steel, new_electronics, new_food, new_oil, new_citizens,
-                      final_infantry, final_cars, final_tanks, final_fighters, c['id']))
+                      final_infantry, final_cars, final_tanks, final_fighters, c_dict['id']))
                 
             await db.commit()
             logging.info(f"[{datetime.now().strftime('%H:%M:%S')}] Экономика: Тик 3 минуты прошел!")
@@ -585,21 +601,21 @@ def tactics_kb(target_id):
 def war_targets_kb(targets):
     kb = []
     for t in targets:
-        type_str = "👤" if t['owner_id'] else "🤖"
+        type_str = "👤" if t.get('owner_id') else "🤖"
         geo = ""
         if t.get('mountains', 0) > 0: geo += "⛰"
         if t.get('forests', 0) > 0: geo += "🌲"
         if t.get('deserts', 0) > 0: geo += "🏜"
-        if t['rivers'] > 0: geo += "🏞"
-        if t['seas'] > 0: geo += "🌊"
-        kb.append([InlineKeyboardButton(text=f"{df(t['flag'])} {t['name']} {type_str} {geo}", callback_data=f"prepwar_{t['id']}")])
+        if t.get('rivers', 0) > 0: geo += "🏞"
+        if t.get('seas', 0) > 0: geo += "🌊"
+        kb.append([InlineKeyboardButton(text=f"{df(t.get('flag'))} {t.get('name')} {type_str} {geo}", callback_data=f"prepwar_{t.get('id')}")])
     kb.append([InlineKeyboardButton(text="◀️ Назад", callback_data="menu_main")])
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
 def alliance_none_kb(alliances):
     kb = [[InlineKeyboardButton(text="➕ Создать Альянс (10,000$)", callback_data="aly_create")]]
     for aly in alliances:
-        kb.append([InlineKeyboardButton(text=f"Подать заявку в {aly['flag']} {aly['name']}", callback_data=f"aly_join_{aly['id']}")])
+        kb.append([InlineKeyboardButton(text=f"Подать заявку в {df(aly.get('flag'))} {aly.get('name')}", callback_data=f"aly_join_{aly.get('id')}")])
     kb.append([InlineKeyboardButton(text="◀️ Назад", callback_data="menu_main")])
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
@@ -640,7 +656,7 @@ def policy_rel_kb(current_rel):
 
 def policy_laws_kb(active_laws_str):
     kb = []
-    active = active_laws_str.split(",") if active_laws_str else []
+    active = [l for l in (active_laws_str or "").split(",") if l]
     for l_id, l_data in LAWS.items():
         status = "🟢" if l_id in active else "🔴"
         kb.append([InlineKeyboardButton(text=f"{status} {l_data['name']}", callback_data=f"togglelaw_{l_id}")])
@@ -724,35 +740,36 @@ def profile_delete_kb():
 # ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ (СИЛА АРМИИ)
 # ========================================================================
 def get_base_power(country):
-    c_dict = dict(country)
-    power = (c_dict.get('infantry',0) * 1) + \
-            (c_dict.get('machine_guns',0) * 3) + \
-            (c_dict.get('mortars',0) * 5) + \
-            (c_dict.get('cars',0) * 2) + \
-            (c_dict.get('hummers',0) * 5) + \
-            (c_dict.get('trucks',0) * 4) + \
-            (c_dict.get('military_cars',0) * 8) + \
-            (c_dict.get('artillery',0) * 10) + \
-            (c_dict.get('tanks',0) * 20) + \
-            (c_dict.get('aa_guns',0) * 30) + \
-            (c_dict.get('sam_systems',0) * 120) + \
-            (c_dict.get('fighters',0) * 100) + \
-            (c_dict.get('bombers',0) * 250) + \
-            (c_dict.get('helicopters',0) * 80) + \
-            (c_dict.get('uavs',0) * 20) + \
-            (c_dict.get('jet_uavs',0) * 60) + \
-            (c_dict.get('baba_yaga',0) * 40) + \
-            (c_dict.get('fpv_drones',0) * 15) + \
-            (c_dict.get('boats',0) * 5) + \
-            (c_dict.get('submarines',0) * 40) + \
-            (c_dict.get('corvettes',0) * 20) + \
-            (c_dict.get('destroyers',0) * 50) + \
-            (c_dict.get('cruisers',0) * 150) + \
-            (c_dict.get('battleships',0) * 500) + \
-            (c_dict.get('carriers',0) * 1000) + \
-            (c_dict.get('bunkers',0) * 50)
-    if 'ships' in c_dict and c_dict['ships'] > 0:
-        power += c_dict['ships'] * 50
+    """Суммирует общую боевую мощь всех родов войск игрока."""
+    c = country
+    power = (c.get('infantry', 0) * 1) + \
+            (c.get('machine_guns', 0) * 3) + \
+            (c.get('mortars', 0) * 5) + \
+            (c.get('cars', 0) * 2) + \
+            (c.get('hummers', 0) * 5) + \
+            (c.get('trucks', 0) * 4) + \
+            (c.get('military_cars', 0) * 8) + \
+            (c.get('artillery', 0) * 10) + \
+            (c.get('tanks', 0) * 20) + \
+            (c.get('aa_guns', 0) * 30) + \
+            (c.get('sam_systems', 0) * 120) + \
+            (c.get('fighters', 0) * 100) + \
+            (c.get('bombers', 0) * 250) + \
+            (c.get('helicopters', 0) * 80) + \
+            (c.get('uavs', 0) * 20) + \
+            (c.get('jet_uavs', 0) * 60) + \
+            (c.get('baba_yaga', 0) * 40) + \
+            (c.get('fpv_drones', 0) * 15) + \
+            (c.get('boats', 0) * 5) + \
+            (c.get('submarines', 0) * 40) + \
+            (c.get('corvettes', 0) * 20) + \
+            (c.get('destroyers', 0) * 50) + \
+            (c.get('cruisers', 0) * 150) + \
+            (c.get('battleships', 0) * 500) + \
+            (c.get('carriers', 0) * 1000) + \
+            (c.get('bunkers', 0) * 50)
+    if 'ships' in c and c['ships'] > 0:
+        power += c['ships'] * 50
     return power
 
 async def get_alliance_support(alliance_id, exclude_country_id):
@@ -812,7 +829,7 @@ async def cmd_trade(message: types.Message):
     ACTIVE_TRADES[t_id] = {
         'sender_id': sender['owner_id'], 'receiver_id': target_country['owner_id'],
         'give_res': 'budget', 'give_amt': 0, 'take_res': 'materials', 'take_amt': 0,
-        'target_name': f"{df(target_country['flag'])} {target_country['name']}"
+        'target_name': f"{df(target_country.get('flag'))} {target_country.get('name')}"
     }
     
     await message.answer(
@@ -822,30 +839,39 @@ async def cmd_trade(message: types.Message):
 
 @dp.callback_query(F.data.startswith("tr_cycle"))
 async def tr_cycle_res(callback: types.CallbackQuery):
-    action, t_id = callback.data.split("_")[1], callback.data.split("_")[2]
-    if t_id not in ACTIVE_TRADES: return await callback.answer("Сделка устарела.", show_alert=True)
-    
-    res_list = list(RES_MAP.keys())
-    field = 'give_res' if action == 'cyclegive' else 'take_res'
-    
-    cur_idx = res_list.index(ACTIVE_TRADES[t_id][field])
-    ACTIVE_TRADES[t_id][field] = res_list[(cur_idx + 1) % len(res_list)]
-    
-    await callback.message.edit_reply_markup(reply_markup=trade_builder_kb(t_id, ACTIVE_TRADES[t_id]))
+    try:
+        action, t_id = callback.data.split("_")[1], callback.data.split("_")[2]
+        if t_id not in ACTIVE_TRADES: return await callback.answer("Сделка устарела.", show_alert=True)
+        
+        res_list = list(RES_MAP.keys())
+        field = 'give_res' if action == 'cyclegive' else 'take_res'
+        
+        cur_idx = res_list.index(ACTIVE_TRADES[t_id][field])
+        ACTIVE_TRADES[t_id][field] = res_list[(cur_idx + 1) % len(res_list)]
+        
+        await callback.message.edit_reply_markup(reply_markup=trade_builder_kb(t_id, ACTIVE_TRADES[t_id]))
+        await callback.answer()
+    except Exception as e:
+        logging.exception(e)
+        await callback.answer("❌ Ошибка смены ресурса!", show_alert=True)
 
 @dp.callback_query(F.data.startswith("tr_set"))
 async def tr_set_amt(callback: types.CallbackQuery, state: FSMContext):
-    action, t_id = callback.data.split("_")[1], callback.data.split("_")[2]
-    if t_id not in ACTIVE_TRADES: return await callback.answer("Сделка устарела.", show_alert=True)
-    
-    await state.update_data(current_trade_id=t_id, trade_msg_id=callback.message.message_id)
-    if action == 'setgive':
-        await callback.message.answer("Введите количество ресурса, которое вы ОТДАЕТЕ:")
-        await state.set_state(TradeState.waiting_give_amt)
-    else:
-        await callback.message.answer("Введите количество ресурса, которое вы ХОТИТЕ ПОЛУЧИТЬ:")
-        await state.set_state(TradeState.waiting_take_amt)
-    await callback.answer()
+    try:
+        action, t_id = callback.data.split("_")[1], callback.data.split("_")[2]
+        if t_id not in ACTIVE_TRADES: return await callback.answer("Сделка устарела.", show_alert=True)
+        
+        await state.update_data(current_trade_id=t_id, trade_msg_id=callback.message.message_id)
+        if action == 'setgive':
+            await callback.message.answer("Введите количество ресурса, которое вы ОТДАЕТЕ:")
+            await state.set_state(TradeState.waiting_give_amt)
+        else:
+            await callback.message.answer("Введите количество ресурса, которое вы ХОТИТЕ ПОЛУЧИТЬ:")
+            await state.set_state(TradeState.waiting_take_amt)
+        await callback.answer()
+    except Exception as e:
+        logging.exception(e)
+        await callback.answer("❌ Ошибка ввода количества!", show_alert=True)
 
 @dp.message(TradeState.waiting_give_amt)
 @dp.message(TradeState.waiting_take_amt)
@@ -856,10 +882,13 @@ async def tr_process_amt(message: types.Message, state: FSMContext):
         await state.clear()
         return await message.answer("Сделка была отменена или устарела.")
         
-    try: amt = int(message.text)
-    except ValueError: return await message.answer("Пожалуйста, введите число.")
+    try: 
+        amt = int(message.text)
+    except ValueError: 
+        return await message.answer("Пожалуйста, введите целое число.")
     
-    if amt < 0: amt = 0
+    if amt < 0: 
+        amt = 0
     
     current_state = await state.get_state()
     if current_state == TradeState.waiting_give_amt.state:
@@ -868,82 +897,113 @@ async def tr_process_amt(message: types.Message, state: FSMContext):
         ACTIVE_TRADES[t_id]['take_amt'] = amt
         
     await state.clear()
-    try: await message.delete()
-    except: pass
+    try: 
+        await message.delete()
+    except: 
+        pass
     
     try:
         await bot.edit_message_reply_markup(chat_id=message.chat.id, message_id=data['trade_msg_id'], reply_markup=trade_builder_kb(t_id, ACTIVE_TRADES[t_id]))
-    except: pass
+    except: 
+        pass
 
 @dp.callback_query(F.data.startswith("tr_cancel_"))
 async def tr_cancel(callback: types.CallbackQuery):
-    t_id = callback.data.split("_")[2]
-    if t_id in ACTIVE_TRADES: del ACTIVE_TRADES[t_id]
-    await safe_edit(callback.message, "Сделка отменена.")
+    try:
+        t_id = callback.data.split("_")[2]
+        if t_id in ACTIVE_TRADES: 
+            del ACTIVE_TRADES[t_id]
+        await safe_edit(callback.message, "Сделка отменена.")
+        await callback.answer("Сделка отменена.")
+    except Exception as e:
+        logging.exception(e)
+        await callback.answer("Ошибка отмены.", show_alert=True)
 
 @dp.callback_query(F.data.startswith("tr_send_"))
 async def tr_send_offer(callback: types.CallbackQuery):
-    t_id = callback.data.split("_")[2]
-    trade = ACTIVE_TRADES.get(t_id)
-    if not trade: return await callback.answer("Сделка устарела.", show_alert=True)
-    
-    sender = await fetch_one("SELECT * FROM countries WHERE owner_id = ?", (trade['sender_id'],))
-    if sender.get(trade['give_res'], 0) < trade['give_amt']:
-        return await callback.answer("У вас нет такого количества ресурсов для отдачи!", show_alert=True)
-        
-    await safe_edit(callback.message, f"⏳ Предложение отправлено {trade['target_name']}. Ожидаем ответа...")
-    
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Принять сделку", callback_data=f"tr_accept_{t_id}")],
-        [InlineKeyboardButton(text="❌ Отклонить", callback_data=f"tr_decline_{t_id}")]
-    ])
     try:
-        await bot.send_message(
-            trade['receiver_id'], 
-            f"🤝 <b>Входящее торговое предложение!</b>\nОт: {df(sender['flag'])} {sender['name']}\n\n"
-            f"📦 <b>Он предлагает:</b> {trade['give_amt']} {RES_MAP[trade['give_res']]}\n"
-            f"🛒 <b>Он просит взамен:</b> {trade['take_amt']} {RES_MAP[trade['take_res']]}",
-            reply_markup=kb
-        )
-    except:
-        await callback.message.answer("Игрок заблокировал бота, сделка невозможна.")
+        t_id = callback.data.split("_")[2]
+        trade = ACTIVE_TRADES.get(t_id)
+        if not trade: 
+            return await callback.answer("Сделка устарела.", show_alert=True)
+        
+        sender = await fetch_one("SELECT * FROM countries WHERE owner_id = ?", (trade['sender_id'],))
+        if sender.get(trade['give_res'], 0) < trade['give_amt']:
+            return await callback.answer("У вас нет такого количества ресурсов для отдачи!", show_alert=True)
+            
+        await safe_edit(callback.message, f"⏳ Предложение отправлено {trade['target_name']}. Ожидаем ответа...")
+        
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Принять сделку", callback_data=f"tr_accept_{t_id}")],
+            [InlineKeyboardButton(text="❌ Отклонить", callback_data=f"tr_decline_{t_id}")]
+        ])
+        try:
+            await bot.send_message(
+                trade['receiver_id'], 
+                f"🤝 <b>Входящее торговое предложение!</b>\nОт: {df(sender.get('flag'))} {sender.get('name')}\n\n"
+                f"📦 <b>Он предлагает:</b> {trade['give_amt']} {RES_MAP[trade['give_res']]}\n"
+                f"🛒 <b>Он просит взамен:</b> {trade['take_amt']} {RES_MAP[trade['take_res']]}",
+                reply_markup=kb
+            )
+        except:
+            await callback.message.answer("Игрок заблокировал бота, сделка невозможна.")
+        await callback.answer()
+    except Exception as e:
+        logging.exception(e)
+        await callback.answer("Ошибка при отправке предложения.", show_alert=True)
 
 @dp.callback_query(F.data.startswith("tr_accept_"))
 async def tr_accept(callback: types.CallbackQuery):
-    t_id = callback.data.split("_")[2]
-    trade = ACTIVE_TRADES.get(t_id)
-    if not trade: return await callback.answer("Сделка больше не действительна.", show_alert=True)
-    
-    if callback.from_user.id != trade['receiver_id']: return await callback.answer("Это не вам!")
-    
-    sender = await fetch_one("SELECT * FROM countries WHERE owner_id = ?", (trade['sender_id'],))
-    receiver = await fetch_one("SELECT * FROM countries WHERE owner_id = ?", (trade['receiver_id'],))
-    
-    if sender.get(trade['give_res'], 0) < trade['give_amt']:
-        return await callback.answer("У отправителя больше нет этого ресурса!", show_alert=True)
-    if receiver.get(trade['take_res'], 0) < trade['take_amt']:
-        return await callback.answer(f"У вас не хватает: {RES_MAP[trade['take_res']]}!", show_alert=True)
+    try:
+        t_id = callback.data.split("_")[2]
+        trade = ACTIVE_TRADES.get(t_id)
+        if not trade: 
+            return await callback.answer("Сделка больше не действительна.", show_alert=True)
         
-    await execute_db(f"UPDATE countries SET {trade['give_res']} = {trade['give_res']} - ? WHERE id = ?", (trade['give_amt'], sender['id']))
-    await execute_db(f"UPDATE countries SET {trade['take_res']} = {trade['take_res']} + ? WHERE id = ?", (trade['take_amt'], sender['id']))
-    
-    await execute_db(f"UPDATE countries SET {trade['give_res']} = {trade['give_res']} + ? WHERE id = ?", (trade['give_amt'], receiver['id']))
-    await execute_db(f"UPDATE countries SET {trade['take_res']} = {trade['take_res']} - ? WHERE id = ?", (trade['take_amt'], receiver['id']))
-    
-    await safe_edit(callback.message, "✅ Сделка успешно завершена! Ресурсы обменяны.")
-    try: await bot.send_message(trade['sender_id'], f"✅ Игрок {df(receiver['flag'])} {receiver['name']} принял вашу сделку! Обмен произведен.")
-    except: pass
-    del ACTIVE_TRADES[t_id]
+        if callback.from_user.id != trade['receiver_id']: 
+            return await callback.answer("Это не для вас!", show_alert=True)
+        
+        sender = await fetch_one("SELECT * FROM countries WHERE owner_id = ?", (trade['sender_id'],))
+        receiver = await fetch_one("SELECT * FROM countries WHERE owner_id = ?", (trade['receiver_id'],))
+        
+        if sender.get(trade['give_res'], 0) < trade['give_amt']:
+            return await callback.answer("У отправителя больше нет этого ресурса!", show_alert=True)
+        if receiver.get(trade['take_res'], 0) < trade['take_amt']:
+            return await callback.answer(f"У вас не хватает: {RES_MAP[trade['take_res']]}!", show_alert=True)
+            
+        await execute_db(f"UPDATE countries SET {trade['give_res']} = {trade['give_res']} - ? WHERE id = ?", (trade['give_amt'], sender['id']))
+        await execute_db(f"UPDATE countries SET {trade['take_res']} = {trade['take_res']} + ? WHERE id = ?", (trade['take_amt'], sender['id']))
+        
+        await execute_db(f"UPDATE countries SET {trade['give_res']} = {trade['give_res']} + ? WHERE id = ?", (trade['give_amt'], receiver['id']))
+        await execute_db(f"UPDATE countries SET {trade['take_res']} = {trade['take_res']} - ? WHERE id = ?", (trade['take_amt'], receiver['id']))
+        
+        await safe_edit(callback.message, "✅ Сделка успешно завершена! Ресурсы обменяны.")
+        try: 
+            await bot.send_message(trade['sender_id'], f"✅ Игрок {df(receiver.get('flag'))} {receiver.get('name')} принял вашу сделку! Обмен произведен.")
+        except: 
+            pass
+        del ACTIVE_TRADES[t_id]
+        await callback.answer("Сделка завершена!")
+    except Exception as e:
+        logging.exception(e)
+        await callback.answer("Ошибка проведения сделки.", show_alert=True)
 
 @dp.callback_query(F.data.startswith("tr_decline_"))
 async def tr_decline(callback: types.CallbackQuery):
-    t_id = callback.data.split("_")[2]
-    trade = ACTIVE_TRADES.get(t_id)
-    if trade:
-        try: await bot.send_message(trade['sender_id'], "❌ Ваше торговое предложение было отклонено.")
-        except: pass
-        del ACTIVE_TRADES[t_id]
-    await safe_edit(callback.message, "Сделка отклонена.")
+    try:
+        t_id = callback.data.split("_")[2]
+        trade = ACTIVE_TRADES.get(t_id)
+        if trade:
+            try: 
+                await bot.send_message(trade['sender_id'], "❌ Ваше торговое предложение было отклонено.")
+            except: 
+                pass
+            del ACTIVE_TRADES[t_id]
+        await safe_edit(callback.message, "Сделка отклонена.")
+        await callback.answer("Сделка отклонена.")
+    except Exception as e:
+        logging.exception(e)
+        await callback.answer("Ошибка отклонения.", show_alert=True)
 
 # ========================================================================
 # СТАРТ И СОЗДАНИЕ/ВЫБОР СТРАНЫ
@@ -956,7 +1016,7 @@ async def cmd_start(message: types.Message, state: FSMContext):
     country = await fetch_one("SELECT * FROM countries WHERE owner_id = ?", (message.from_user.id,))
     if country:
         return await message.answer(
-            f"С возвращением, Правитель!\nТвоя страна: <b>{df(country['flag'])} {country['name']}</b>", 
+            f"С возвращением, Правитель!\nТвоя страна: <b>{df(country.get('flag'))} {country.get('name')}</b>", 
             reply_markup=main_menu_kb()
         )
         
@@ -965,7 +1025,7 @@ async def cmd_start(message: types.Message, state: FSMContext):
     if unclaimed:
         kb = [[InlineKeyboardButton(text="➕ Основать новую страну", callback_data="start_create")]]
         for c in unclaimed:
-            kb.append([InlineKeyboardButton(text=f"👑 Занять {df(c['flag'])} {c['name']} (Готовая)", callback_data=f"claim_free_{c['id']}")])
+            kb.append([InlineKeyboardButton(text=f"👑 Занять {df(c.get('flag'))} {c.get('name')} (Готовая)", callback_data=f"claim_free_{c.get('id')}")])
         
         await message.answer(
             "🌍 <b>Добро пожаловать в 'Войну Стран'!</b>\n\n"
@@ -978,29 +1038,37 @@ async def cmd_start(message: types.Message, state: FSMContext):
 
 @dp.callback_query(F.data == "start_create")
 async def start_create_btn(callback: types.CallbackQuery, state: FSMContext):
-    await safe_edit(callback.message, "Придумай <b>Название</b> для своей новой страны:")
-    await state.set_state(CreateCountry.name)
-    await callback.answer()
+    try:
+        await safe_edit(callback.message, "Придумай <b>Название</b> для своей новой страны:")
+        await state.set_state(CreateCountry.name)
+        await callback.answer()
+    except Exception as e:
+        logging.exception(e)
+        await callback.answer("Произошла ошибка создания.", show_alert=True)
 
 @dp.callback_query(F.data.startswith("claim_free_"))
 async def claim_free_country(callback: types.CallbackQuery):
-    c_id = int(callback.data.split("_")[2])
-    country = await fetch_one("SELECT * FROM countries WHERE id = ? AND is_unclaimed = 1", (c_id,))
-    
-    if not country:
-        return await callback.answer("Эта страна уже занята!", show_alert=True)
+    try:
+        c_id = int(callback.data.split("_")[2])
+        country = await fetch_one("SELECT * FROM countries WHERE id = ? AND is_unclaimed = 1", (c_id,))
         
-    await execute_db(
-        "UPDATE countries SET owner_id = ?, username = ?, is_unclaimed = 0 WHERE id = ?",
-        (callback.from_user.id, callback.from_user.username or "", c_id)
-    )
-    
-    await safe_edit(callback.message, 
-        f"🎉 Вы успешно возглавили государство <b>{df(country['flag'])} {country['name']}</b>!\n"
-        f"Переходите в главное меню для управления.",
-        reply_markup=main_menu_kb()
-    )
-    await callback.answer()
+        if not country:
+            return await callback.answer("Эта страна уже занята!", show_alert=True)
+            
+        await execute_db(
+            "UPDATE countries SET owner_id = ?, username = ?, is_unclaimed = 0 WHERE id = ?",
+            (callback.from_user.id, callback.from_user.username or "", c_id)
+        )
+        
+        await safe_edit(callback.message, 
+            f"🎉 Вы успешно возглавили государство <b>{df(country.get('flag'))} {country.get('name')}</b>!\n"
+            f"Переходите в главное меню для управления.",
+            reply_markup=main_menu_kb()
+        )
+        await callback.answer()
+    except Exception as e:
+        logging.exception(e)
+        await callback.answer("Не удалось занять страну.", show_alert=True)
 
 @dp.message(CreateCountry.name)
 async def process_country_name(message: types.Message, state: FSMContext):
@@ -1045,193 +1113,226 @@ async def process_country_flag(message: types.Message, state: FSMContext):
 # ========================================================================
 @dp.callback_query(F.data.startswith("menu_"))
 async def process_menus(callback: types.CallbackQuery, state: FSMContext):
-    if is_spam(callback.from_user.id): 
-        return await callback.answer("⏳ Не так быстро!", show_alert=False)
-        
-    await state.clear()
-    await update_username(callback.from_user.id, callback.from_user.username)
-    
-    action = callback.data.split("_", 1)[1]
-    
-    if action == "feedback":
-        await safe_edit(callback.message, "✉️ <b>Обратная связь с Администрацией</b>\n\nОтправьте ваше сообщение текстом ИЛИ фотографию с подписью. Мы постараемся ответить как можно скорее!", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="menu_main")]]))
-        await state.set_state(FeedbackState.waiting_message)
-        return await callback.answer()
-        
-    country = await fetch_one("SELECT * FROM countries WHERE owner_id = ?", (callback.from_user.id,))
-    
-    if not country:
-        return await callback.answer("У вас нет страны! Напишите /start", show_alert=True)
-
-    if action == "profile":
-        aly_text = "Нет"
-        if country['alliance_id']:
-            aly = await fetch_one("SELECT * FROM alliances WHERE id = ?", (country['alliance_id'],))
-            if aly: aly_text = f"{df(aly['flag'])} {aly['name']}"
-
-        geo = f"🏞 Рек: {country['rivers']} | 🌊 Море: {'Есть' if country['seas'] else 'Нет'} | ⛰ Гор: {country.get('mountains',0)} | 🌲 Лесов: {country.get('forests',0)} | 🏜 Пустынь: {country.get('deserts',0)}"
-        
-        gov_name = GOV_TYPES.get(country['gov_type'], {}).get('name', 'Не выбрано')
-        active = country['active_laws'].split(",") if country['active_laws'] else []
-        laws_count = len(active)
-        
-        photo_id = country['flag'].split(":")[1] if country['flag'].startswith("photo:") else None
-
-        text = (
-            f"🌍 <b>Страна:</b> {df(country['flag'])} {country['name']} (Побед: {country['war_wins']} 🏅)\n"
-            f"🏛 <b>Правление:</b> {gov_name} | 🕊 <b>Религия:</b> {country['religion']}\n"
-            f"👥 <b>Граждане:</b> {country['citizens']:,}\n"
-            f"🤝 <b>Альянс:</b> {aly_text}\n"
-            f"🗺 <b>Ландшафт:</b> {geo}\n"
-            f"➖➖➖➖➖➖➖➖➖➖\n"
-            f"💰 <b>Бюджет:</b> {country['budget']:,}$\n"
-            f"🧱 <b>Мат:</b> {country['materials']:,} | ⚙️ <b>Сталь:</b> {country.get('steel',0):,} | 💻 <b>Электр.:</b> {country.get('electronics',0):,}\n"
-            f"🛢 <b>Нефть:</b> {country['oil']:,} | 🥩 <b>Еда:</b> {country['food']:,}\n"
-            f"📈 <b>Базовый ВВП:</b> {country['gdp']:,}$\n"
-            f"🗺 <b>Территория:</b> {country['territory']:,} км²\n"
-            f"🏘 <b>Поселения (Города):</b> {country['settlements']}\n"
-            f"📜 <b>Активных законов:</b> {laws_count}\n"
-            f"➖➖➖➖➖➖➖➖➖➖\n"
-            f"🏭 Заводы: {country['factories']} | ⚙️ Сталелит.: {country.get('steel_mills',0)} | 💻 Тех.Фабрики: {country.get('tech_factories',0)}\n"
-            f"🛢 Вышки: {country['oil_rigs']} | 🌾 Фермы: {country['farms']}\n"
-            f"🌉 Понтонные мосты: {country['bridges']}\n"
-            f"➖➖➖➖➖➖➖➖➖➖\n"
-            f"⚔️ <b>Наземные:</b> {country['infantry']} Пех. | {country['machine_guns']} Пул. | {country['mortars']} Мин.\n"
-            f"🚙 <b>Техника:</b> {country['cars']} Авто | {country['hummers']} Хамм. | {country['military_cars']} ВМ | {country['trucks']} Груз | {country['tanks']} Танков\n"
-            f"💥 <b>Арт. и ПВО:</b> {country['artillery']} Арт. | {country.get('aa_guns',0)} Зениток | {country.get('sam_systems',0)} ЗРК\n"
-            f"🛩 <b>Авиация:</b> {country.get('fighters',0)} Истр. | {country.get('bombers',0)} Бомб. | {country.get('helicopters',0)} Верт.\n"
-            f"🛸 <b>Дроны:</b> {country.get('uavs',0)} БПЛА | {country.get('jet_uavs',0)} Реак. | {country.get('baba_yaga',0)} Б.Яга | {country.get('fpv_drones',0)} ФПВ\n"
-            f"⚓️ <b>Флот:</b> {country['boats']} Лодок | {country.get('corvettes',0)} Корв. | {country.get('submarines',0)} Подл. | {country['destroyers']} Эсм. | {country['cruisers']} Крейс. | {country['battleships']} Линк. | {country.get('carriers',0)} Авианос.\n"
-            f"🛡 <b>Защита:</b> {country['bunkers']} Бункеры | 🕵️‍♂️ Шпионы: {country['spies']}"
-        )
-        
-        # Клавиатура профиля с кнопкой удаления
-        p_kb = main_menu_kb().inline_keyboard
-        p_kb.append([InlineKeyboardButton(text="🧨 Покинуть пост (Удалить страну)", callback_data="delete_self_warn")])
-        
-        await safe_edit(callback.message, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=p_kb), photo_id=photo_id)
-        
-    elif action == "main":
-        await safe_edit(callback.message, "Штаб Главнокомандующего. Ожидаю приказов:", reply_markup=main_menu_kb())
-        
-    elif action == "economy":
-        rates = calc_economy_rates(country)
-        net_money = rates['prod_money']
-        net_materials = rates['prod_materials']
-        net_steel = rates['prod_steel']
-        net_electronics = rates['prod_electronics']
-        net_food = rates['prod_food'] - rates['cons_food']
-        net_oil = rates['prod_oil'] - rates['cons_oil']
-        
-        await safe_edit(callback.message, 
-            f"🏭 <b>Министерство Экономики</b>\n"
-            f"<i>Тик происходит каждые 3 минуты. На производство влияют Законы и Правление.</i>\n\n"
-            f"<b>Склады и запасы:</b>\n"
-            f"💵 Бюджет: {country['budget']:,}$\n"
-            f"🧱 Материалы: {country['materials']:,}\n"
-            f"⚙️ Сталь: {country.get('steel',0):,}\n"
-            f"💻 Электроника: {country.get('electronics',0):,}\n"
-            f"🛢 Нефть: {country['oil']:,}\n"
-            f"🥩 Еда: {country['food']:,}\n\n"
-            f"<b>Приток ресурсов (за 1 тик / 3 мин):</b>\n"
-            f"💵 Бюджет: +{rates['prod_money']}/-0 (итог: +{net_money}$/тик)\n"
-            f"🧱 Материалы: +{rates['prod_materials']}/-0 (итог: +{net_materials}/тик)\n"
-            f"⚙️ Сталь: +{rates['prod_steel']}/-0 (итог: +{net_steel}/тик)\n"
-            f"💻 Электроника: +{rates['prod_electronics']}/-0 (итог: +{net_electronics}/тик)\n"
-            f"🛢 Нефть: +{rates['prod_oil']}/-{rates['cons_oil']} (итог: {net_oil}/тик)\n"
-            f"🥩 Еда: +{rates['prod_food']}/-{rates['cons_food']} (итог: {net_food}/тик)\n",
-            reply_markup=economy_build_kb()
-        )
-
-    elif action == "army":
-        await safe_edit(callback.message, 
-            f"🪖 <b>Министерство Обороны</b>\n\nВыберите категорию войск:\n💵 Доступно: {country['budget']}$ | 🧱 {country['materials']} мат. | ⚙️ {country.get('steel',0)} стали | 💻 {country.get('electronics',0)} электр. | 🥩 {country['food']} еды", 
-            reply_markup=army_main_kb()
-        )
-    elif action == "army_ground":
-        await safe_edit(callback.message, "🪖 <b>Наземные войска, ПВО и укрепления:</b>", reply_markup=army_ground_kb())
-    elif action == "army_naval":
-        await safe_edit(callback.message, "⚓️ <b>Военно-морские верфи:</b>", reply_markup=army_naval_kb())
-    elif action == "army_air":
-        await safe_edit(callback.message, "🛩 <b>Военно-воздушные силы:</b>", reply_markup=army_air_kb())
-    elif action == "army_drones":
-        await safe_edit(callback.message, "🛸 <b>Заводы Беспилотных Войск:</b>", reply_markup=army_drones_kb())
-        
-    elif action == "laws":
-        gov_name = GOV_TYPES.get(country['gov_type'], {}).get('name', 'Не выбрано')
-        active = country['active_laws'].split(",") if country['active_laws'] else []
-        laws_text = "\n".join([f"🟢 {LAWS[l]['name']}" for l in active]) if active else "🔴 Нет активных законов"
-        
-        text = (
-            f"📜 <b>Внутренняя Политика</b>\n\n"
-            f"🏛 <b>Форма правления:</b> {gov_name}\n"
-            f"🕊 <b>Религия:</b> {country['religion']}\n\n"
-            f"<b>Активные законы:</b>\n{laws_text}\n\n"
-            f"<i>Законы и форма правления изменяют экономические показатели страны во время каждого тика (3 мин).</i>"
-        )
-        await safe_edit(callback.message, text, reply_markup=policy_main_kb())
-
-    elif action == "alliance":
-        if country['alliance_id'] == 0:
-            top_alliances = await fetch_all("SELECT * FROM alliances LIMIT 5")
-            await safe_edit(callback.message, "🤝 <b>Дипломатия Альянсов</b>\n\nВы не состоите в альянсе.", reply_markup=alliance_none_kb(top_alliances))
-        else:
-            aly = await fetch_one("SELECT * FROM alliances WHERE id = ?", (country['alliance_id'],))
-            members = await fetch_all("SELECT * FROM countries WHERE alliance_id = ?", (aly['id'],))
-            total_power = sum(get_base_power(m) for m in members)
+    try:
+        if is_spam(callback.from_user.id): 
+            return await callback.answer("⏳ Не так быстро!", show_alert=False)
             
-            text = f"🤝 <b>Альянс:</b> {df(aly['flag'])} {aly['name']}\n\n"
-            text += f"Участников: {len(members)}\n"
-            text += f"Суммарная мощь войск альянса: ⚔️ {total_power}\n\n<b>Список стран:</b>\n"
-            for m in members:
-                role = "👑 Лидер" if m['owner_id'] == aly['leader_id'] else "👤 Участник"
-                text += f"- {df(m['flag'])} {m['name']} ({role})\n"
+        if state is not None:
+            await state.clear()
+            
+        await update_username(callback.from_user.id, callback.from_user.username)
+        action = callback.data.split("_", 1)[1]
+        
+        if action == "feedback":
+            await safe_edit(callback.message, "✉️ <b>Обратная связь с Администрацией</b>\n\nОтправьте ваше сообщение текстом ИЛИ фотографию с подписью. Мы постараемся ответить как можно скорее!", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="menu_main")]]))
+            if state is not None:
+                await state.set_state(FeedbackState.waiting_message)
+            return await callback.answer()
+            
+        country = await fetch_one("SELECT * FROM countries WHERE owner_id = ?", (callback.from_user.id,))
+        
+        if not country:
+            return await callback.answer("У вас нет страны! Напишите /start", show_alert=True)
+
+        if action == "profile":
+            aly_text = "Нет"
+            if country.get('alliance_id'):
+                aly = await fetch_one("SELECT * FROM alliances WHERE id = ?", (country['alliance_id'],))
+                if aly: 
+                    aly_text = f"{df(aly.get('flag'))} {aly.get('name')}"
+
+            geo = f"🏞 Рек: {country.get('rivers', 0)} | 🌊 Море: {'Есть' if country.get('seas', 0) else 'Нет'} | ⛰ Гор: {country.get('mountains',0)} | 🌲 Лесов: {country.get('forests',0)} | 🏜 Пустынь: {country.get('deserts',0)}"
+            
+            gov_name = GOV_TYPES.get(country.get('gov_type'), {}).get('name', 'Не выбрано')
+            active_laws_str = country.get('active_laws') or ''
+            active = [l for l in active_laws_str.split(",") if l]
+            laws_count = len(active)
+            
+            flag = country.get('flag') or "🏳️"
+            photo_id = flag.split(":")[1] if flag.startswith("photo:") else None
+
+            text = (
+                f"🌍 <b>Страна:</b> {df(flag)} {country.get('name')} (Побед: {country.get('war_wins', 0)} 🏅)\n"
+                f"🏛 <b>Правление:</b> {gov_name} | 🕊 <b>Религия:</b> {country.get('religion', 'Атеизм')}\n"
+                f"👥 <b>Граждане:</b> {country.get('citizens', 10000):,}\n"
+                f"🤝 <b>Альянс:</b> {aly_text}\n"
+                f"🗺 <b>Ландшафт:</b> {geo}\n"
+                f"➖➖➖➖➖➖➖➖➖➖\n"
+                f"💰 <b>Бюджет:</b> {country.get('budget', 0):,}$\n"
+                f"🧱 <b>Мат:</b> {country.get('materials', 0):,} | ⚙️ <b>Сталь:</b> {country.get('steel',0):,} | 💻 <b>Электр.:</b> {country.get('electronics',0):,}\n"
+                f"🛢 <b>Нефть:</b> {country.get('oil', 0):,} | 🥩 <b>Еда:</b> {country.get('food', 0):,}\n"
+                f"📈 <b>Базовый ВВП:</b> {country.get('gdp', 100):,}$\n"
+                f"🗺 <b>Территория:</b> {country.get('territory', 10):,} км²\n"
+                f"🏘 <b>Поселения (Города):</b> {country.get('settlements', 1)}\n"
+                f"📜 <b>Активных законов:</b> {laws_count}\n"
+                f"➖➖➖➖➖➖➖➖➖➖\n"
+                f"🏭 Заводы: {country.get('factories', 1)} | ⚙️ Сталелит.: {country.get('steel_mills',0)} | 💻 Тех.Фабрики: {country.get('tech_factories',0)}\n"
+                f"🛢 Вышки: {country.get('oil_rigs', 1)} | 🌾 Фермы: {country.get('farms', 2)}\n"
+                f"🌉 Понтонные мосты: {country.get('bridges', 0)}\n"
+                f"➖➖➖➖➖➖➖➖➖➖\n"
+                f"⚔️ <b>Наземные:</b> {country.get('infantry', 0)} Пех. | {country.get('machine_guns', 0)} Пул. | {country.get('mortars', 0)} Мин.\n"
+                f"🚙 <b>Техника:</b> {country.get('cars', 0)} Авто | {country.get('hummers', 0)} Хамм. | {country.get('military_cars', 0)} ВМ | {country.get('trucks', 0)} Груз | {country.get('tanks', 0)} Танков\n"
+                f"💥 <b>Арт. и ПВО:</b> {country.get('artillery', 0)} Арт. | {country.get('aa_guns',0)} Зениток | {country.get('sam_systems',0)} ЗРК\n"
+                f"🛩 <b>Авиация:</b> {country.get('fighters',0)} Истр. | {country.get('bombers',0)} Бомб. | {country.get('helicopters',0)} Верт.\n"
+                f"🛸 <b>Дроны:</b> {country.get('uavs',0)} БПЛА | {country.get('jet_uavs',0)} Реак. | {country.get('baba_yaga',0)} Б.Яга | {country.get('fpv_drones',0)} ФПВ\n"
+                f"⚓️ <b>Флот:</b> {country.get('boats', 0)} Лодок | {country.get('corvettes',0)} Корв. | {country.get('submarines',0)} Подл. | {country.get('destroyers', 0)} Эсм. | {country.get('cruisers', 0)} Крейс. | {country.get('battleships', 0)} Линк. | {country.get('carriers',0)} Авианос.\n"
+                f"🛡 <b>Защита:</b> {country.get('bunkers', 0)} Бункеры | 🕵️‍♂️ Шпионы: {country.get('spies', 0)}"
+            )
+            
+            p_kb = main_menu_kb().inline_keyboard.copy()
+            p_kb.append([InlineKeyboardButton(text="🧨 Покинуть пост (Удалить страну)", callback_data="delete_self_warn")])
+            
+            await safe_edit(callback.message, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=p_kb), photo_id=photo_id)
+            await callback.answer("Данные о стране обновлены.")
+            
+        elif action == "main":
+            await safe_edit(callback.message, "Штаб Главнокомандующего. Ожидаю приказов:", reply_markup=main_menu_kb())
+            await callback.answer()
+            
+        elif action == "economy":
+            rates = calc_economy_rates(country)
+            net_money = rates['prod_money']
+            net_materials = rates['prod_materials']
+            net_steel = rates['prod_steel']
+            net_electronics = rates['prod_electronics']
+            net_food = rates['prod_food'] - rates['cons_food']
+            net_oil = rates['prod_oil'] - rates['cons_oil']
+            
+            await safe_edit(callback.message, 
+                f"🏭 <b>Министерство Экономики</b>\n"
+                f"<i>Тик происходит каждые 3 минуты. На производство влияют Законы и Правление.</i>\n\n"
+                f"<b>Склады и запасы:</b>\n"
+                f"💵 Бюджет: {country.get('budget', 0):,}$\n"
+                f"🧱 Материалы: {country.get('materials', 0):,}\n"
+                f"⚙️ Сталь: {country.get('steel',0):,}\n"
+                f"💻 Электроника: {country.get('electronics',0):,}\n"
+                f"🛢 Нефть: {country.get('oil', 0):,}\n"
+                f"🥩 Еда: {country.get('food', 0):,}\n\n"
+                f"<b>Приток ресурсов (за 1 тик / 3 мин):</b>\n"
+                f"💵 Бюджет: +{rates['prod_money']}/-0 (итог: +{net_money}$/тик)\n"
+                f"🧱 Материалы: +{rates['prod_materials']}/-0 (итог: +{net_materials}/тик)\n"
+                f"⚙️ Сталь: +{rates['prod_steel']}/-0 (итог: +{net_steel}/тик)\n"
+                f"💻 Электроника: +{rates['prod_electronics']}/-0 (итог: +{net_electronics}/тик)\n"
+                f"🛢 Нефть: +{rates['prod_oil']}/-{rates['cons_oil']} (итог: {net_oil}/тик)\n"
+                f"🥩 Еда: +{rates['prod_food']}/-{rates['cons_food']} (итог: {net_food}/тик)\n",
+                reply_markup=economy_build_kb()
+            )
+            await callback.answer("Экономический отчет составлен.")
+
+        elif action == "army":
+            await safe_edit(callback.message, 
+                f"🪖 <b>Министерство Обороны</b>\n\nВыберите категорию войск:\n💵 Доступно: {country.get('budget', 0)}$ | 🧱 {country.get('materials', 0)} мат. | ⚙️ {country.get('steel',0)} стали | 💻 {country.get('electronics',0)} электр. | 🥩 {country.get('food', 0)} еды", 
+                reply_markup=army_main_kb()
+            )
+            await callback.answer()
+
+        elif action == "army_ground":
+            await safe_edit(callback.message, "🪖 <b>Наземные войска, ПВО и укрепления:</b>", reply_markup=army_ground_kb())
+            await callback.answer()
+
+        elif action == "army_naval":
+            await safe_edit(callback.message, "⚓️ <b>Военно-морские верфи:</b>", reply_markup=army_naval_kb())
+            await callback.answer()
+
+        elif action == "army_air":
+            await safe_edit(callback.message, "🛩 <b>Военно-воздушные силы:</b>", reply_markup=army_air_kb())
+            await callback.answer()
+
+        elif action == "army_drones":
+            await safe_edit(callback.message, "🛸 <b>Заводы Беспилотных Войск:</b>", reply_markup=army_drones_kb())
+            await callback.answer()
+            
+        elif action == "laws":
+            gov_name = GOV_TYPES.get(country.get('gov_type'), {}).get('name', 'Не выбрано')
+            active_laws_str = country.get('active_laws') or ''
+            active = [l for l in active_laws_str.split(",") if l]
+            laws_text = "\n".join([f"🟢 {LAWS[l]['name']}" for l in active]) if active else "🔴 Нет активных законов"
+            
+            text = (
+                f"📜 <b>Внутренняя Политика</b>\n\n"
+                f"🏛 <b>Форма правления:</b> {gov_name}\n"
+                f"🕊 <b>Религия:</b> {country.get('religion', 'Атеизм')}\n\n"
+                f"<b>Активные законы:</b>\n{laws_text}\n\n"
+                f"<i>Законы и форма правления изменяют экономические показатели страны во время каждого тика (3 мин).</i>"
+            )
+            await safe_edit(callback.message, text, reply_markup=policy_main_kb())
+            await callback.answer()
+
+        elif action == "alliance":
+            if country.get('alliance_id', 0) == 0:
+                top_alliances = await fetch_all("SELECT * FROM alliances LIMIT 5")
+                await safe_edit(callback.message, "🤝 <b>Дипломатия Альянсов</b>\n\nВы не состоите в альянсе.", reply_markup=alliance_none_kb(top_alliances))
+            else:
+                aly = await fetch_one("SELECT * FROM alliances WHERE id = ?", (country['alliance_id'],))
+                members = await fetch_all("SELECT * FROM countries WHERE alliance_id = ?", (aly['id'],))
+                total_power = sum(get_base_power(m) for m in members)
                 
-            is_leader = (country['owner_id'] == aly['leader_id'])
-            await safe_edit(callback.message, text, reply_markup=alliance_member_kb(is_leader))
+                text = f"🤝 <b>Альянс:</b> {df(aly.get('flag'))} {aly.get('name')}\n\n"
+                text += f"Участников: {len(members)}\n"
+                text += f"Суммарная мощь войск альянса: ⚔️ {total_power}\n\n<b>Список стран:</b>\n"
+                for m in members:
+                    role = "👑 Лидер" if m.get('owner_id') == aly.get('leader_id') else "👤 Участник"
+                    text += f"- {df(m.get('flag'))} {m.get('name')} ({role})\n"
+                    
+                is_leader = (country.get('owner_id') == aly.get('leader_id'))
+                await safe_edit(callback.message, text, reply_markup=alliance_member_kb(is_leader))
+            await callback.answer()
 
-    elif action == "war":
-        targets = await fetch_all("SELECT * FROM countries WHERE id != ? AND is_unclaimed = 0 ORDER BY RANDOM() LIMIT 10", (country['id'],))
-        if not targets:
-            return await callback.answer("В мире пока нет других стран для атаки!", show_alert=True)
-            
-        await safe_edit(callback.message, 
-            "⚔️ <b>Командование: Выбор цели</b>\n"
-            "👤 Игроки | 🤖 NPC\n"
-            "🏞 Реки | 🌊 Море | ⛰ Горы | 🌲 Леса | 🏜 Пустыни\n\n"
-            "<i>Для атаки требуется 200 Еды и 100 Нефти на мобилизацию!</i>",
-            reply_markup=war_targets_kb(targets)
-        )
-    await callback.answer()
+        elif action == "war":
+            targets = await fetch_all("SELECT * FROM countries WHERE id != ? AND is_unclaimed = 0 ORDER BY RANDOM() LIMIT 10", (country['id'],))
+            if not targets:
+                return await callback.answer("В мире пока нет других стран для атаки!", show_alert=True)
+                
+            await safe_edit(callback.message, 
+                "⚔️ <b>Командование: Выбор цели</b>\n"
+                "👤 Игроки | 🤖 NPC\n"
+                "🏞 Реки | 🌊 Море | ⛰ Горы | 🌲 Леса | 🏜 Пустыни\n\n"
+                "<i>Для атаки требуется 200 Еды и 100 Нефти на мобилизацию!</i>",
+                reply_markup=war_targets_kb(targets)
+            )
+            await callback.answer("Штабные карты обновлены.")
+    except Exception as e:
+        logging.exception(e)
+        await callback.answer("❌ Сбой в обработке меню. Пожалуйста, попробуйте еще раз.", show_alert=True)
 
 # ========================================================================
 # УДАЛЕНИЕ СТРАНЫ ПОЛЬЗОВАТЕЛЕМ
 # ========================================================================
 @dp.callback_query(F.data == "delete_self_warn")
 async def process_delete_warn(callback: types.CallbackQuery, state: FSMContext):
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⚠️ ДА, НАВСЕГДА УДАЛИТЬ СТРАНУ", callback_data="delete_self_confirm")],
-        [InlineKeyboardButton(text="◀️ ОТМЕНА", callback_data="menu_profile")]
-    ])
-    await safe_edit(callback.message, "🧨 <b>ВНИМАНИЕ!</b>\nВы собираетесь навсегда удалить свою страну.\nВсе ваши войска, ресурсы, здания и достижения будут уничтожены без возможности восстановления.\n\nВы уверены?", reply_markup=kb)
-    await state.set_state(DeleteCountryState.confirm)
+    try:
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⚠️ ДА, НАВСЕГДА УДАЛИТЬ СТРАНУ", callback_data="delete_self_confirm")],
+            [InlineKeyboardButton(text="◀️ ОТМЕНА", callback_data="menu_profile")]
+        ])
+        await safe_edit(callback.message, "🧨 <b>ВНИМАНИЕ!</b>\nВы собираетесь навсегда удалить свою страну.\nВсе ваши войска, ресурсы, здания и достижения будут уничтожены без возможности восстановления.\n\nВы уверены?", reply_markup=kb)
+        if state is not None:
+            await state.set_state(DeleteCountryState.confirm)
+        await callback.answer()
+    except Exception as e:
+        logging.exception(e)
+        await callback.answer("Не удалось инициировать удаление.", show_alert=True)
 
 @dp.callback_query(F.data == "delete_self_confirm")
 async def process_delete_confirm(callback: types.CallbackQuery, state: FSMContext):
-    country = await fetch_one("SELECT * FROM countries WHERE owner_id = ?", (callback.from_user.id,))
-    if country:
-        # Если лидер альянса, распускаем альянс
-        aly = await fetch_one("SELECT * FROM alliances WHERE leader_id = ?", (callback.from_user.id,))
-        if aly:
-            await execute_db("UPDATE countries SET alliance_id = 0 WHERE alliance_id = ?", (aly['id'],))
-            await execute_db("DELETE FROM alliances WHERE id = ?", (aly['id'],))
-            await execute_db("DELETE FROM alliance_requests WHERE alliance_id = ?", (aly['id'],))
+    try:
+        country = await fetch_one("SELECT * FROM countries WHERE owner_id = ?", (callback.from_user.id,))
+        if country:
+            aly = await fetch_one("SELECT * FROM alliances WHERE leader_id = ?", (callback.from_user.id,))
+            if aly:
+                await execute_db("UPDATE countries SET alliance_id = 0 WHERE alliance_id = ?", (aly['id'],))
+                await execute_db("DELETE FROM alliances WHERE id = ?", (aly['id'],))
+                await execute_db("DELETE FROM alliance_requests WHERE alliance_id = ?", (aly['id'],))
+                
+            await execute_db("DELETE FROM countries WHERE id = ?", (country['id'],))
             
-        # Удаляем страну
-        await execute_db("DELETE FROM countries WHERE id = ?", (country['id'],))
-        
-    await state.clear()
-    await safe_edit(callback.message, "💥 <b>Ваша страна была полностью стёрта с лица Земли.</b>\n\nВы можете начать игру заново, написав /start.")
+        if state is not None:
+            await state.clear()
+        await safe_edit(callback.message, "💥 <b>Ваша страна была полностью стёрта с лица Земли.</b>\n\nВы можете начать игру заново, написав /start.")
+        await callback.answer("Страна удалена.", show_alert=True)
+    except Exception as e:
+        logging.exception(e)
+        await callback.answer("Ошибка при удалении страны.", show_alert=True)
 
 # ========================================================================
 # ХЭНДЛЕРЫ: ОБРАТНАЯ СВЯЗЬ
@@ -1268,101 +1369,124 @@ async def process_feedback_message(message: types.Message, state: FSMContext):
 # ========================================================================
 @dp.callback_query(F.data.startswith("policy_"))
 async def process_policy(callback: types.CallbackQuery):
-    action = callback.data.split("_")[1]
-    country = await fetch_one("SELECT * FROM countries WHERE owner_id = ?", (callback.from_user.id,))
-    
-    if action == "gov":
-        text = "🏛 <b>Выбор формы правления</b>\nПервый выбор бесплатный, последующие смены стоят <b>10,000$</b>.\n\n"
-        for g_id, g_data in GOV_TYPES.items():
-            text += f"<b>{g_data['name']}</b>: {g_data['desc']}\n"
-        await safe_edit(callback.message, text, reply_markup=policy_gov_kb(country['gov_type']))
+    try:
+        action = callback.data.split("_")[1]
+        country = await fetch_one("SELECT * FROM countries WHERE owner_id = ?", (callback.from_user.id,))
+        if not country:
+            return await callback.answer("Ошибка: Страна не найдена.", show_alert=True)
         
-    elif action == "rel":
-        text = "🕊 <b>Выбор религии</b>\nПервый выбор бесплатный (с Атеизма), смена стоит <b>5,000$</b>.\n"
-        await safe_edit(callback.message, text, reply_markup=policy_rel_kb(country['religion']))
-        
-    elif action == "laws":
-        text = "📜 <b>Управление законами</b>\nВключение или отмена бесплатны, но их эффекты постоянно влияют на экономику.\n\n"
-        for l_id, l_data in LAWS.items():
-            text += f"<b>{l_data['name']}</b>: {l_data['desc']}\n"
-        await safe_edit(callback.message, text, reply_markup=policy_laws_kb(country['active_laws']))
-        
-    elif action == "custom":
-        await safe_edit(callback.message, "🎨 <b>Кастомизация страны</b>\nЗдесь вы можете за деньги сменить название или флаг (эмодзи/картинку).", reply_markup=customization_kb())
-        
-    await callback.answer()
+        if action == "gov":
+            text = "🏛 <b>Выбор формы правления</b>\nПервый выбор бесплатный, последующие смены стоят <b>10,000$</b>.\n\n"
+            for g_id, g_data in GOV_TYPES.items():
+                text += f"<b>{g_data['name']}</b>: {g_data['desc']}\n"
+            await safe_edit(callback.message, text, reply_markup=policy_gov_kb(country.get('gov_type')))
+            
+        elif action == "rel":
+            text = "🕊 <b>Выбор религии</b>\nПервый выбор бесплатный (с Атеизма), смена стоит <b>5,000$</b>.\n"
+            await safe_edit(callback.message, text, reply_markup=policy_rel_kb(country.get('religion')))
+            
+        elif action == "laws":
+            text = "📜 <b>Управление законами</b>\nВключение или отмена бесплатны, но их эффекты постоянно влияют на экономику.\n\n"
+            for l_id, l_data in LAWS.items():
+                text += f"<b>{l_data['name']}</b>: {l_data['desc']}\n"
+            await safe_edit(callback.message, text, reply_markup=policy_laws_kb(country.get('active_laws')))
+            
+        elif action == "custom":
+            await safe_edit(callback.message, "🎨 <b>Кастомизация страны</b>\nЗдесь вы можете за деньги сменить название или флаг (эмодзи/картинку).", reply_markup=customization_kb())
+            
+        await callback.answer()
+    except Exception as e:
+        logging.exception(e)
+        await callback.answer("Ошибка полит-панели.", show_alert=True)
 
 @dp.callback_query(F.data.startswith("setgov_"))
 async def process_setgov(callback: types.CallbackQuery):
-    g_id = callback.data.split("_", 1)[1]
-    country = await fetch_one("SELECT * FROM countries WHERE owner_id = ?", (callback.from_user.id,))
-    
-    if country['gov_type'] == g_id:
-        return await callback.answer("У вас уже установлена эта форма правления!", show_alert=True)
+    try:
+        g_id = callback.data.split("_", 1)[1]
+        country = await fetch_one("SELECT * FROM countries WHERE owner_id = ?", (callback.from_user.id,))
         
-    cost = 0 if country['gov_type'] == "Не выбрано" else 10000
-    if country['budget'] < cost:
-        return await callback.answer(f"❌ Недостаточно средств! Нужно {cost}$.", show_alert=True)
-        
-    await execute_db("UPDATE countries SET budget = budget - ?, gov_type = ? WHERE id = ?", (cost, g_id, country['id']))
-    await callback.answer(f"✅ Форма правления изменена на {GOV_TYPES[g_id]['name']}!", show_alert=True)
-    callback.data = "menu_laws"
-    await process_menus(callback, None)
+        if country.get('gov_type') == g_id:
+            return await callback.answer("У вас уже установлена эта форма правления!", show_alert=True)
+            
+        cost = 0 if country.get('gov_type') == "Не выбрано" else 10000
+        if country.get('budget', 0) < cost:
+            return await callback.answer(f"❌ Недостаточно средств! Нужно {cost}$.", show_alert=True)
+            
+        await execute_db("UPDATE countries SET budget = budget - ?, gov_type = ? WHERE id = ?", (cost, g_id, country['id']))
+        await callback.answer(f"✅ Форма правления изменена на {GOV_TYPES[g_id]['name']}!", show_alert=True)
+        callback.data = "menu_laws"
+        await process_menus(callback, None)
+    except Exception as e:
+        logging.exception(e)
+        await callback.answer("Ошибка смены формы правления.", show_alert=True)
 
 @dp.callback_query(F.data.startswith("setrel_"))
 async def process_setrel(callback: types.CallbackQuery):
-    r_id = callback.data.split("_", 1)[1]
-    rel_name = RELIGIONS[r_id]['name']
-    country = await fetch_one("SELECT * FROM countries WHERE owner_id = ?", (callback.from_user.id,))
-    
-    if country['religion'] == rel_name:
-        return await callback.answer("У вас уже установлена эта религия!", show_alert=True)
+    try:
+        r_id = callback.data.split("_", 1)[1]
+        rel_name = RELIGIONS[r_id]['name']
+        country = await fetch_one("SELECT * FROM countries WHERE owner_id = ?", (callback.from_user.id,))
         
-    cost = 0 if country['religion'] == "Атеизм" else 5000
-    if country['budget'] < cost:
-        return await callback.answer(f"❌ Недостаточно средств! Нужно {cost}$.", show_alert=True)
-        
-    await execute_db("UPDATE countries SET budget = budget - ?, religion = ? WHERE id = ?", (cost, rel_name, country['id']))
-    await callback.answer(f"✅ Религия изменена на {rel_name}!", show_alert=True)
-    callback.data = "menu_laws"
-    await process_menus(callback, None)
+        if country.get('religion') == rel_name:
+            return await callback.answer("У вас уже установлена эта религия!", show_alert=True)
+            
+        cost = 0 if country.get('religion') == "Атеизм" else 5000
+        if country.get('budget', 0) < cost:
+            return await callback.answer(f"❌ Недостаточно средств! Нужно {cost}$.", show_alert=True)
+            
+        await execute_db("UPDATE countries SET budget = budget - ?, religion = ? WHERE id = ?", (cost, rel_name, country['id']))
+        await callback.answer(f"✅ Религия изменена на {rel_name}!", show_alert=True)
+        callback.data = "menu_laws"
+        await process_menus(callback, None)
+    except Exception as e:
+        logging.exception(e)
+        await callback.answer("Ошибка смены религии.", show_alert=True)
 
 @dp.callback_query(F.data.startswith("togglelaw_"))
 async def process_togglelaw(callback: types.CallbackQuery):
-    l_id = callback.data.split("_", 1)[1]
-    country = await fetch_one("SELECT * FROM countries WHERE owner_id = ?", (callback.from_user.id,))
-    
-    active = country['active_laws'].split(",") if country['active_laws'] else []
-    if l_id in active:
-        active.remove(l_id)
-        msg = f"🔴 Закон {LAWS[l_id]['name']} отменен!"
-    else:
-        active.append(l_id)
-        msg = f"🟢 Закон {LAWS[l_id]['name']} принят!"
+    try:
+        l_id = callback.data.split("_", 1)[1]
+        country = await fetch_one("SELECT * FROM countries WHERE owner_id = ?", (callback.from_user.id,))
         
-    new_laws = ",".join(active)
-    await execute_db("UPDATE countries SET active_laws = ? WHERE id = ?", (new_laws, country['id']))
-    await callback.answer(msg)
-    
-    text = "📜 <b>Управление законами</b>\nВключение или отмена бесплатны, но их эффекты постоянно влияют на экономику.\n\n"
-    for l, l_data in LAWS.items():
-        text += f"<b>{l_data['name']}</b>: {l_data['desc']}\n"
-    await safe_edit(callback.message, text, reply_markup=policy_laws_kb(new_laws))
+        active_laws_str = country.get('active_laws') or ''
+        active = [l for l in active_laws_str.split(",") if l]
+        if l_id in active:
+            active.remove(l_id)
+            msg = f"🔴 Закон {LAWS[l_id]['name']} отменен!"
+        else:
+            active.append(l_id)
+            msg = f"🟢 Закон {LAWS[l_id]['name']} принят!"
+            
+        new_laws = ",".join(active)
+        await execute_db("UPDATE countries SET active_laws = ? WHERE id = ?", (new_laws, country['id']))
+        await callback.answer(msg)
+        
+        text = "📜 <b>Управление законами</b>\nВключение или отмена бесплатны, но их эффекты постоянно влияют на экономику.\n\n"
+        for l, l_data in LAWS.items():
+            text += f"<b>{l_data['name']}</b>: {l_data['desc']}\n"
+        await safe_edit(callback.message, text, reply_markup=policy_laws_kb(new_laws))
+    except Exception as e:
+        logging.exception(e)
+        await callback.answer("Ошибка изменения законов.", show_alert=True)
 
 @dp.callback_query(F.data == "custom_name")
 async def process_custom_name(callback: types.CallbackQuery, state: FSMContext):
-    country = await fetch_one("SELECT * FROM countries WHERE owner_id = ?", (callback.from_user.id,))
-    if country['budget'] < 5000:
-        return await callback.answer("❌ Недостаточно средств! Нужно 5,000$.", show_alert=True)
-    await safe_edit(callback.message, "Введите <b>новое название</b> страны (снимется 5,000$):")
-    await state.set_state(CustomizeState.new_name)
-    await callback.answer()
+    try:
+        country = await fetch_one("SELECT * FROM countries WHERE owner_id = ?", (callback.from_user.id,))
+        if country.get('budget', 0) < 5000:
+            return await callback.answer("❌ Недостаточно средств! Нужно 5,000$.", show_alert=True)
+        await safe_edit(callback.message, "Введите <b>новое название</b> страны (снимется 5,000$):")
+        await state.set_state(CustomizeState.new_name)
+        await callback.answer()
+    except Exception as e:
+        logging.exception(e)
+        await callback.answer("Ошибка смены названия.", show_alert=True)
 
 @dp.message(CustomizeState.new_name)
 async def finish_custom_name(message: types.Message, state: FSMContext):
     new_name = message.text[:30]
     country = await fetch_one("SELECT * FROM countries WHERE owner_id = ?", (message.from_user.id,))
-    if country['budget'] < 5000:
+    if country.get('budget', 0) < 5000:
         await state.clear()
         return await message.answer("Не хватает денег для смены названия.")
         
@@ -1372,17 +1496,21 @@ async def finish_custom_name(message: types.Message, state: FSMContext):
 
 @dp.callback_query(F.data == "custom_flag")
 async def process_custom_flag(callback: types.CallbackQuery, state: FSMContext):
-    country = await fetch_one("SELECT * FROM countries WHERE owner_id = ?", (callback.from_user.id,))
-    if country['budget'] < 3000:
-        return await callback.answer("❌ Недостаточно средств! Нужно 3,000$.", show_alert=True)
-    await safe_edit(callback.message, "Отправьте <b>новый эмодзи</b> или <b>фото 16:9</b> (снимется 3,000$):")
-    await state.set_state(CustomizeState.new_flag)
-    await callback.answer()
+    try:
+        country = await fetch_one("SELECT * FROM countries WHERE owner_id = ?", (callback.from_user.id,))
+        if country.get('budget', 0) < 3000:
+            return await callback.answer("❌ Недостаточно средств! Нужно 3,000$.", show_alert=True)
+        await safe_edit(callback.message, "Отправьте <b>новый эмодзи</b> или <b>фото 16:9</b> (снимется 3,000$):")
+        await state.set_state(CustomizeState.new_flag)
+        await callback.answer()
+    except Exception as e:
+        logging.exception(e)
+        await callback.answer("Ошибка изменения флага.", show_alert=True)
 
 @dp.message(CustomizeState.new_flag, F.text | F.photo)
 async def finish_custom_flag(message: types.Message, state: FSMContext):
     country = await fetch_one("SELECT * FROM countries WHERE owner_id = ?", (message.from_user.id,))
-    if country['budget'] < 3000:
+    if country.get('budget', 0) < 3000:
         await state.clear()
         return await message.answer("Не хватает денег для смены флага.")
 
@@ -1403,60 +1531,82 @@ async def finish_custom_flag(message: types.Message, state: FSMContext):
 # ========================================================================
 @dp.callback_query(F.data.startswith("aly_join_"))
 async def cmd_aly_join_req(callback: types.CallbackQuery):
-    if is_spam(callback.from_user.id): return await callback.answer("⏳", show_alert=False)
-    
-    aly_id = int(callback.data.split("_")[2])
-    exists = await fetch_one("SELECT id FROM alliance_requests WHERE user_id = ? AND alliance_id = ?", (callback.from_user.id, aly_id))
-    if exists:
-        return await callback.answer("Вы уже подали заявку в этот альянс!", show_alert=True)
+    try:
+        if is_spam(callback.from_user.id): return await callback.answer("⏳", show_alert=False)
         
-    await execute_db("INSERT INTO alliance_requests (alliance_id, user_id) VALUES (?, ?)", (aly_id, callback.from_user.id))
-    await callback.answer("✅ Заявка отправлена лидеру альянса!", show_alert=True)
+        aly_id = int(callback.data.split("_")[2])
+        exists = await fetch_one("SELECT id FROM alliance_requests WHERE user_id = ? AND alliance_id = ?", (callback.from_user.id, aly_id))
+        if exists:
+            return await callback.answer("Вы уже подали заявку в этот альянс!", show_alert=True)
+            
+        await execute_db("INSERT INTO alliance_requests (alliance_id, user_id) VALUES (?, ?)", (aly_id, callback.from_user.id))
+        await callback.answer("✅ Заявка отправлена лидеру альянса!", show_alert=True)
+    except Exception as e:
+        logging.exception(e)
+        await callback.answer("Ошибка вступления.", show_alert=True)
 
 @dp.callback_query(F.data == "aly_reqs")
 async def cmd_aly_reqs(callback: types.CallbackQuery):
-    country = await fetch_one("SELECT * FROM countries WHERE owner_id = ?", (callback.from_user.id,))
-    reqs = await fetch_all("SELECT * FROM alliance_requests WHERE alliance_id = ?", (country['alliance_id'],))
-    
-    if not reqs:
-        return await callback.answer("Заявок на вступление пока нет.", show_alert=True)
+    try:
+        country = await fetch_one("SELECT * FROM countries WHERE owner_id = ?", (callback.from_user.id,))
+        reqs = await fetch_all("SELECT * FROM alliance_requests WHERE alliance_id = ?", (country['alliance_id'],))
         
-    kb = []
-    for r in reqs:
-        user_c = await fetch_one("SELECT * FROM countries WHERE owner_id = ?", (r['user_id'],))
-        if user_c:
-            kb.append([InlineKeyboardButton(text=f"✅ Принять {df(user_c['flag'])} {user_c['name']}", callback_data=f"aly_acc_{r['id']}_{user_c['owner_id']}")])
-            kb.append([InlineKeyboardButton(text=f"❌ Отклонить {df(user_c['flag'])} {user_c['name']}", callback_data=f"aly_rej_{r['id']}")])
+        if not reqs:
+            return await callback.answer("Заявок на вступление пока нет.", show_alert=True)
             
-    kb.append([InlineKeyboardButton(text="◀️ Назад", callback_data="menu_alliance")])
-    await safe_edit(callback.message, "📥 <b>Заявки на вступление:</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+        kb = []
+        for r in reqs:
+            user_c = await fetch_one("SELECT * FROM countries WHERE owner_id = ?", (r['user_id'],))
+            if user_c:
+                kb.append([InlineKeyboardButton(text=f"✅ Принять {df(user_c.get('flag'))} {user_c.get('name')}", callback_data=f"aly_acc_{r['id']}_{user_c['owner_id']}")])
+                kb.append([InlineKeyboardButton(text=f"❌ Отклонить {df(user_c.get('flag'))} {user_c.get('name')}", callback_data=f"aly_rej_{r['id']}")])
+                
+        kb.append([InlineKeyboardButton(text="◀️ Назад", callback_data="menu_alliance")])
+        await safe_edit(callback.message, "📥 <b>Заявки на вступление:</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+        await callback.answer()
+    except Exception as e:
+        logging.exception(e)
+        await callback.answer("Ошибка запроса списка заявок.", show_alert=True)
 
 @dp.callback_query(F.data.startswith("aly_acc_"))
 async def aly_accept(callback: types.CallbackQuery):
-    parts = callback.data.split("_")
-    req_id, user_id = int(parts[2]), int(parts[3])
-    
-    country = await fetch_one("SELECT * FROM countries WHERE owner_id = ?", (callback.from_user.id,))
-    await execute_db("UPDATE countries SET alliance_id = ? WHERE owner_id = ?", (country['alliance_id'], user_id))
-    await execute_db("DELETE FROM alliance_requests WHERE user_id = ?", (user_id,))
-    
-    await callback.answer("Игрок принят в альянс!", show_alert=True)
-    await cmd_aly_reqs(callback)
+    try:
+        parts = callback.data.split("_")
+        req_id, user_id = int(parts[2]), int(parts[3])
+        
+        country = await fetch_one("SELECT * FROM countries WHERE owner_id = ?", (callback.from_user.id,))
+        await execute_db("UPDATE countries SET alliance_id = ? WHERE owner_id = ?", (country['alliance_id'], user_id))
+        await execute_db("DELETE FROM alliance_requests WHERE user_id = ?", (user_id,))
+        
+        await callback.answer("Игрок принят в альянс!", show_alert=True)
+        await cmd_aly_reqs(callback)
+    except Exception as e:
+        logging.exception(e)
+        await callback.answer("Ошибка одобрения заявки.", show_alert=True)
 
 @dp.callback_query(F.data.startswith("aly_rej_"))
 async def aly_reject(callback: types.CallbackQuery):
-    req_id = int(callback.data.split("_")[2])
-    await execute_db("DELETE FROM alliance_requests WHERE id = ?", (req_id,))
-    await callback.answer("Заявка успешно отклонена.", show_alert=True)
-    await cmd_aly_reqs(callback)
+    try:
+        req_id = int(callback.data.split("_")[2])
+        await execute_db("DELETE FROM alliance_requests WHERE id = ?", (req_id,))
+        await callback.answer("Заявка успешно отклонена.", show_alert=True)
+        await cmd_aly_reqs(callback)
+    except Exception as e:
+        logging.exception(e)
+        await callback.answer("Ошибка отклонения заявки.", show_alert=True)
 
 @dp.callback_query(F.data == "aly_create")
 async def cmd_aly_create(callback: types.CallbackQuery, state: FSMContext):
-    country = await fetch_one("SELECT * FROM countries WHERE owner_id = ?", (callback.from_user.id,))
-    if country['budget'] < 10000:
-        return await callback.answer("Недостаточно средств! Нужно 10,000$", show_alert=True)
-    await safe_edit(callback.message, "Введите <b>Название</b> вашего нового Альянса (до 30 символов):")
-    await state.set_state(CreateAlliance.name)
+    try:
+        country = await fetch_one("SELECT * FROM countries WHERE owner_id = ?", (callback.from_user.id,))
+        if country.get('budget', 0) < 10000:
+            return await callback.answer("Недостаточно средств! Нужно 10,000$", show_alert=True)
+        await safe_edit(callback.message, "Введите <b>Название</b> вашего нового Альянса (до 30 символов):")
+        await state.set_state(CreateAlliance.name)
+        await callback.answer()
+    except Exception as e:
+        logging.exception(e)
+        await callback.answer("Ошибка создания альянса.", show_alert=True)
 
 @dp.message(CreateAlliance.name)
 async def aly_name_step(message: types.Message, state: FSMContext):
@@ -1480,233 +1630,257 @@ async def aly_flag_step(message: types.Message, state: FSMContext):
 
 @dp.callback_query(F.data == "aly_leave")
 async def cmd_aly_leave(callback: types.CallbackQuery):
-    country = await fetch_one("SELECT * FROM countries WHERE owner_id = ?", (callback.from_user.id,))
-    await execute_db("UPDATE countries SET alliance_id = 0 WHERE id = ?", (country['id'],))
-    await callback.answer("Вы покинули Альянс.", show_alert=True)
-    await safe_edit(callback.message, "Вы покинули Альянс.", reply_markup=main_menu_kb())
+    try:
+        country = await fetch_one("SELECT * FROM countries WHERE owner_id = ?", (callback.from_user.id,))
+        await execute_db("UPDATE countries SET alliance_id = 0 WHERE id = ?", (country['id'],))
+        await callback.answer("Вы покинули Альянс.", show_alert=True)
+        await safe_edit(callback.message, "Вы покинули Альянс.", reply_markup=main_menu_kb())
+    except Exception as e:
+        logging.exception(e)
+        await callback.answer("Ошибка выхода из альянса.", show_alert=True)
 
 @dp.callback_query(F.data == "aly_disband")
 async def cmd_aly_disband(callback: types.CallbackQuery):
-    country = await fetch_one("SELECT * FROM countries WHERE owner_id = ?", (callback.from_user.id,))
-    aly_id = country['alliance_id']
-    await execute_db("UPDATE countries SET alliance_id = 0 WHERE alliance_id = ?", (aly_id,))
-    await execute_db("DELETE FROM alliances WHERE id = ?", (aly_id,))
-    await execute_db("DELETE FROM alliance_requests WHERE alliance_id = ?", (aly_id,))
-    await callback.answer("Альянс распущен!", show_alert=True)
-    await safe_edit(callback.message, "Ваш Альянс был навсегда распущен.", reply_markup=main_menu_kb())
+    try:
+        country = await fetch_one("SELECT * FROM countries WHERE owner_id = ?", (callback.from_user.id,))
+        aly_id = country.get('alliance_id', 0)
+        await execute_db("UPDATE countries SET alliance_id = 0 WHERE alliance_id = ?", (aly_id,))
+        await execute_db("DELETE FROM alliances WHERE id = ?", (aly_id,))
+        await execute_db("DELETE FROM alliance_requests WHERE alliance_id = ?", (aly_id,))
+        await callback.answer("Альянс распущен!", show_alert=True)
+        await safe_edit(callback.message, "Ваш Альянс был навсегда распущен.", reply_markup=main_menu_kb())
+    except Exception as e:
+        logging.exception(e)
+        await callback.answer("Ошибка роспуска.", show_alert=True)
 
 # ========================================================================
 # ХЭНДЛЕРЫ: СТРОИТЕЛЬСТВО И ПОКУПКА
 # ========================================================================
 @dp.callback_query(F.data.startswith("build_"))
 async def process_economy_build(callback: types.CallbackQuery):
-    if is_spam(callback.from_user.id): return await callback.answer("⏳ Подождите...")
-    
-    item = callback.data.split("_")[1]
-    country = await fetch_one("SELECT * FROM countries WHERE owner_id = ?", (callback.from_user.id,))
-    
-    if item == "settlement":
-        if country['budget'] < 15000 or country['materials'] < 2000 or country['food'] < 2000:
-            return await callback.answer("❌ Нужно 15000$, 2000 Мат., 2000 Еды.", show_alert=True)
-        await execute_db(
-            "UPDATE countries SET budget = budget - 15000, materials = materials - 2000, food = food - 2000, settlements = settlements + 1, gdp = gdp + 200 WHERE id = ?", 
-            (country['id'],)
-        )
-        await callback.answer("✅ Основано новое Поселение!", show_alert=True)
-    else:
-        costs = {
-            "factory": {"money": 5000, "mat": 500, "steel": 0, "elec": 0, "db": "factories", "name": "Завод"},
-            "rig": {"money": 8000, "mat": 1000, "steel": 100, "elec": 0, "db": "oil_rigs", "name": "Нефтевышка"},
-            "farm": {"money": 3000, "mat": 200, "steel": 0, "elec": 0, "db": "farms", "name": "Ферма"},
-            "bridge": {"money": 2000, "mat": 800, "steel": 50, "elec": 0, "db": "bridges", "name": "Понтонный мост"},
-            "steelmill": {"money": 10000, "mat": 2000, "steel": 0, "elec": 0, "db": "steel_mills", "name": "Сталелитейный завод"},
-            "techfac": {"money": 20000, "mat": 3000, "steel": 1000, "elec": 0, "db": "tech_factories", "name": "Фабрика электроники"}
-        }
-        req = costs[item]
+    try:
+        if is_spam(callback.from_user.id): return await callback.answer("⏳ Подождите...")
         
-        if country['budget'] < req["money"] or country['materials'] < req["mat"] or country.get('steel',0) < req['steel'] or country.get('electronics',0) < req['elec']:
-            return await callback.answer(f"❌ Недостаточно ресурсов для постройки!", show_alert=True)
+        item = callback.data.split("_")[1]
+        country = await fetch_one("SELECT * FROM countries WHERE owner_id = ?", (callback.from_user.id,))
+        
+        if item == "settlement":
+            if country.get('budget', 0) < 15000 or country.get('materials', 0) < 2000 or country.get('food', 0) < 2000:
+                return await callback.answer("❌ Нужно 15000$, 2000 Мат., 2000 Еды.", show_alert=True)
+            await execute_db(
+                "UPDATE countries SET budget = budget - 15000, materials = materials - 2000, food = food - 2000, settlements = settlements + 1, gdp = gdp + 200 WHERE id = ?", 
+                (country['id'],)
+            )
+            await callback.answer("✅ Основано новое Поселение!", show_alert=True)
+        else:
+            costs = {
+                "factory": {"money": 5000, "mat": 500, "steel": 0, "elec": 0, "db": "factories", "name": "Завод"},
+                "rig": {"money": 8000, "mat": 1000, "steel": 100, "elec": 0, "db": "oil_rigs", "name": "Нефтевышка"},
+                "farm": {"money": 3000, "mat": 200, "steel": 0, "elec": 0, "db": "farms", "name": "Ферма"},
+                "bridge": {"money": 2000, "mat": 800, "steel": 50, "elec": 0, "db": "bridges", "name": "Понтонный мост"},
+                "steelmill": {"money": 10000, "mat": 2000, "steel": 0, "elec": 0, "db": "steel_mills", "name": "Сталелитейный завод"},
+                "techfac": {"money": 20000, "mat": 3000, "steel": 1000, "elec": 0, "db": "tech_factories", "name": "Фабрика электроники"}
+            }
+            req = costs[item]
             
-        await execute_db(
-            f"UPDATE countries SET budget = budget - ?, materials = materials - ?, steel = steel - ?, electronics = electronics - ?, {req['db']} = {req['db']} + 1 WHERE id = ?",
-            (req["money"], req["mat"], req["steel"], req["elec"], country['id'])
+            if country.get('budget', 0) < req["money"] or country.get('materials', 0) < req["mat"] or country.get('steel',0) < req['steel'] or country.get('electronics',0) < req['elec']:
+                return await callback.answer(f"❌ Недостаточно ресурсов для постройки!", show_alert=True)
+                
+            await execute_db(
+                f"UPDATE countries SET budget = budget - ?, materials = materials - ?, steel = steel - ?, electronics = electronics - ?, {req['db']} = {req['db']} + 1 WHERE id = ?",
+                (req["money"], req["mat"], req["steel"], req["elec"], country['id'])
+            )
+            await callback.answer(f"✅ Успешно построено: {req['name']}!", show_alert=True)
+        
+        new_country = await fetch_one("SELECT * FROM countries WHERE id = ?", (country['id'],))
+        text = (
+            f"🏭 <b>Министерство Экономики</b>\n"
+            f"💵 Бюджет: {new_country.get('budget', 0):,}$ | 🧱 Матер.: {new_country.get('materials', 0):,} | ⚙️ Сталь: {new_country.get('steel',0):,}\n"
+            f"💻 Электр.: {new_country.get('electronics',0):,} | 🥩 Еда: {new_country.get('food', 0):,}\n"
+            f"🏘 Поселения: {new_country.get('settlements', 1)}\n"
+            f"🏭 Заводы: {new_country.get('factories', 1)} | ⚙️ Сталелит.: {new_country.get('steel_mills',0)} | 💻 Тех.Фабрики: {new_country.get('tech_factories',0)}\n"
+            f"🛢 Вышки: {new_country.get('oil_rigs', 1)} | 🌾 Фермы: {new_country.get('farms', 2)}\n"
+            f"🌉 Мосты: {new_country.get('bridges', 0)}"
         )
-        await callback.answer(f"✅ Успешно построено: {req['name']}!", show_alert=True)
-    
-    new_country = await fetch_one("SELECT * FROM countries WHERE id = ?", (country['id'],))
-    text = (
-        f"🏭 <b>Министерство Экономики</b>\n"
-        f"💵 Бюджет: {new_country['budget']:,}$ | 🧱 Матер.: {new_country['materials']:,} | ⚙️ Сталь: {new_country.get('steel',0):,}\n"
-        f"💻 Электр.: {new_country.get('electronics',0):,} | 🥩 Еда: {new_country['food']:,}\n"
-        f"🏘 Поселения: {new_country['settlements']}\n"
-        f"🏭 Заводы: {new_country['factories']} | ⚙️ Сталелит.: {new_country.get('steel_mills',0)} | 💻 Тех.Фабрики: {new_country.get('tech_factories',0)}\n"
-        f"🛢 Вышки: {new_country['oil_rigs']} | 🌾 Фермы: {new_country['farms']}\n"
-        f"🌉 Мосты: {new_country['bridges']}"
-    )
-    await safe_edit(callback.message, text, reply_markup=economy_build_kb())
+        await safe_edit(callback.message, text, reply_markup=economy_build_kb())
+    except Exception as e:
+        logging.exception(e)
+        await callback.answer("Ошибка при строительстве.", show_alert=True)
 
 @dp.callback_query(F.data.startswith("buy_"))
 async def process_army_buy(callback: types.CallbackQuery):
-    if is_spam(callback.from_user.id): return await callback.answer("⏳ Не закупайте так быстро!")
-    
-    item = callback.data.split("_")[1]
-    country = await fetch_one("SELECT * FROM countries WHERE owner_id = ?", (callback.from_user.id,))
-    
-    costs = {
-        "infantry": {"money": 100, "food": 50, "materials": 0, "amount": 10, "name": "Пехоты"},
-        "machineguns": {"money": 200, "food": 50, "materials": 50, "steel": 10, "amount": 1, "name": "Пулемёт", "db": "machine_guns"},
-        "mortars": {"money": 400, "food": 50, "materials": 150, "steel": 50, "amount": 1, "name": "Миномёт", "db": "mortars"},
-        "cars": {"money": 300, "food": 0, "materials": 100, "steel": 50, "amount": 1, "name": "Авто"},
-        "hummers": {"money": 600, "food": 0, "materials": 200, "steel": 100, "amount": 1, "name": "Хаммер", "db": "hummers"},
-        "milcars": {"money": 1000, "food": 0, "materials": 400, "steel": 200, "amount": 1, "name": "Воен.машина", "db": "military_cars"},
-        "trucks": {"money": 500, "food": 0, "materials": 200, "steel": 100, "amount": 1, "name": "Грузовик"},
-        "tanks": {"money": 2000, "food": 0, "materials": 1000, "steel": 500, "amount": 1, "name": "Танк"},
-        "artillery": {"money": 800, "food": 0, "materials": 300, "steel": 200, "amount": 1, "name": "Артиллерия"},
-        "aaguns": {"money": 1500, "food": 0, "materials": 500, "steel": 300, "amount": 1, "name": "Зенитка", "db": "aa_guns"},
-        "sams": {"money": 5000, "food": 0, "materials": 1500, "steel": 800, "electronics": 300, "amount": 1, "name": "ЗРК", "db": "sam_systems"},
+    try:
+        if is_spam(callback.from_user.id): return await callback.answer("⏳ Не закупайте так быстро!")
         
-        "boats": {"money": 800, "food": 0, "materials": 200, "steel": 50, "amount": 1, "name": "Лодка", "db": "boats"},
-        "destroyers": {"money": 3000, "food": 0, "materials": 1000, "steel": 800, "electronics": 100, "amount": 1, "name": "Эсминец"},
-        "cruisers": {"money": 7000, "food": 0, "materials": 2500, "steel": 2000, "electronics": 300, "amount": 1, "name": "Крейсер"},
-        "battleships": {"money": 15000, "food": 0, "materials": 5000, "steel": 4000, "electronics": 500, "amount": 1, "name": "Линкор"},
-        "submarines": {"money": 2500, "food": 0, "materials": 1000, "steel": 1000, "electronics": 200, "amount": 1, "name": "Подлодка"},
-        "corvettes": {"money": 1500, "food": 0, "materials": 500, "steel": 400, "amount": 1, "name": "Корвет"},
-        "carriers": {"money": 30000, "food": 0, "materials": 10000, "steel": 8000, "electronics": 2000, "amount": 1, "name": "Авианосец"},
+        item = callback.data.split("_")[1]
+        country = await fetch_one("SELECT * FROM countries WHERE owner_id = ?", (callback.from_user.id,))
         
-        "fighters": {"money": 5000, "food": 0, "materials": 1000, "steel": 500, "electronics": 200, "amount": 1, "name": "Истребитель", "db": "fighters"},
-        "bombers": {"money": 12000, "food": 0, "materials": 2000, "steel": 1000, "electronics": 400, "amount": 1, "name": "Бомбардировщик", "db": "bombers"},
-        "helicopters": {"money": 4000, "food": 0, "materials": 800, "steel": 300, "electronics": 100, "amount": 1, "name": "Вертолет", "db": "helicopters"},
+        costs = {
+            "infantry": {"money": 100, "food": 50, "materials": 0, "amount": 10, "name": "Пехоты"},
+            "machineguns": {"money": 200, "food": 50, "materials": 50, "steel": 10, "amount": 1, "name": "Пулемёт", "db": "machine_guns"},
+            "mortars": {"money": 400, "food": 50, "materials": 150, "steel": 50, "amount": 1, "name": "Миномёт", "db": "mortars"},
+            "cars": {"money": 300, "food": 0, "materials": 100, "steel": 50, "amount": 1, "name": "Авто"},
+            "hummers": {"money": 600, "food": 0, "materials": 200, "steel": 100, "amount": 1, "name": "Хаммер", "db": "hummers"},
+            "milcars": {"money": 1000, "food": 0, "materials": 400, "steel": 200, "amount": 1, "name": "Воен.машина", "db": "military_cars"},
+            "trucks": {"money": 500, "food": 0, "materials": 200, "steel": 100, "amount": 1, "name": "Грузовик"},
+            "tanks": {"money": 2000, "food": 0, "materials": 1000, "steel": 500, "amount": 1, "name": "Танк"},
+            "artillery": {"money": 800, "food": 0, "materials": 300, "steel": 200, "amount": 1, "name": "Артиллерия"},
+            "aaguns": {"money": 1500, "food": 0, "materials": 500, "steel": 300, "amount": 1, "name": "Зенитка", "db": "aa_guns"},
+            "sams": {"money": 5000, "food": 0, "materials": 1500, "steel": 800, "electronics": 300, "amount": 1, "name": "ЗРК", "db": "sam_systems"},
+            
+            "boats": {"money": 800, "food": 0, "materials": 200, "steel": 50, "amount": 1, "name": "Лодка", "db": "boats"},
+            "destroyers": {"money": 3000, "food": 0, "materials": 1000, "steel": 800, "electronics": 100, "amount": 1, "name": "Эсминец"},
+            "cruisers": {"money": 7000, "food": 0, "materials": 2500, "steel": 2000, "electronics": 300, "amount": 1, "name": "Крейсер"},
+            "battleships": {"money": 15000, "food": 0, "materials": 5000, "steel": 4000, "electronics": 500, "amount": 1, "name": "Линкор"},
+            "submarines": {"money": 2500, "food": 0, "materials": 1000, "steel": 1000, "electronics": 200, "amount": 1, "name": "Подлодка"},
+            "corvettes": {"money": 1500, "food": 0, "materials": 500, "steel": 400, "amount": 1, "name": "Корвет"},
+            "carriers": {"money": 30000, "food": 0, "materials": 10000, "steel": 8000, "electronics": 2000, "amount": 1, "name": "Авианосец"},
+            
+            "fighters": {"money": 5000, "food": 0, "materials": 1000, "steel": 500, "electronics": 200, "amount": 1, "name": "Истребитель", "db": "fighters"},
+            "bombers": {"money": 12000, "food": 0, "materials": 2000, "steel": 1000, "electronics": 400, "amount": 1, "name": "Бомбардировщик", "db": "bombers"},
+            "helicopters": {"money": 4000, "food": 0, "materials": 800, "steel": 300, "electronics": 100, "amount": 1, "name": "Вертолет", "db": "helicopters"},
+            
+            "uavs": {"money": 1000, "food": 0, "materials": 200, "steel": 50, "electronics": 150, "amount": 1, "name": "БПЛА", "db": "uavs"},
+            "jetuavs": {"money": 3000, "food": 0, "materials": 500, "steel": 200, "electronics": 400, "amount": 1, "name": "Реак.БПЛА", "db": "jet_uavs"},
+            "babayaga": {"money": 2000, "food": 0, "materials": 300, "steel": 100, "electronics": 250, "amount": 1, "name": "Баба Яга", "db": "baba_yaga"},
+            "fpv": {"money": 200, "food": 0, "materials": 50, "steel": 10, "electronics": 30, "amount": 1, "name": "ФПВ-Дрон", "db": "fpv_drones"},
+            
+            "bunkers": {"money": 3000, "food": 0, "materials": 1500, "steel": 500, "amount": 1, "name": "Бункер"},
+            "spies": {"money": 1000, "food": 0, "materials": 0, "amount": 1, "name": "Шпион"}
+        }
         
-        "uavs": {"money": 1000, "food": 0, "materials": 200, "steel": 50, "electronics": 150, "amount": 1, "name": "БПЛА", "db": "uavs"},
-        "jetuavs": {"money": 3000, "food": 0, "materials": 500, "steel": 200, "electronics": 400, "amount": 1, "name": "Реак.БПЛА", "db": "jet_uavs"},
-        "babayaga": {"money": 2000, "food": 0, "materials": 300, "steel": 100, "electronics": 250, "amount": 1, "name": "Баба Яга", "db": "baba_yaga"},
-        "fpv": {"money": 200, "food": 0, "materials": 50, "steel": 10, "electronics": 30, "amount": 1, "name": "ФПВ-Дрон", "db": "fpv_drones"},
+        if item not in costs: return await callback.answer("Ошибка товара.", show_alert=True)
+        req = costs[item]
+        db_field = req.get("db", item)
+        req_steel = req.get("steel", 0)
+        req_elec = req.get("electronics", 0)
         
-        "bunkers": {"money": 3000, "food": 0, "materials": 1500, "steel": 500, "amount": 1, "name": "Бункер"},
-        "spies": {"money": 1000, "food": 0, "materials": 0, "amount": 1, "name": "Шпион"}
-    }
-    
-    if item not in costs: return await callback.answer("Ошибка товара.", show_alert=True)
-    req = costs[item]
-    db_field = req.get("db", item)
-    req_steel = req.get("steel", 0)
-    req_elec = req.get("electronics", 0)
-    
-    if country['budget'] < req["money"] or country['food'] < req["food"] or country['materials'] < req["materials"] or country.get('steel',0) < req_steel or country.get('electronics',0) < req_elec:
-        return await callback.answer(f"❌ Не хватает ресурсов (Бюджет, Еда, Мат, Сталь или Электр.)!", show_alert=True)
+        if country.get('budget', 0) < req["money"] or country.get('food', 0) < req["food"] or country.get('materials', 0) < req["materials"] or country.get('steel',0) < req_steel or country.get('electronics',0) < req_elec:
+            return await callback.answer(f"❌ Не хватает ресурсов (Бюджет, Еда, Мат, Сталь или Электр.)!", show_alert=True)
+            
+        await execute_db(
+            f"UPDATE countries SET budget = budget - ?, food = food - ?, materials = materials - ?, steel = steel - ?, electronics = electronics - ?, {db_field} = {db_field} + ? WHERE id = ?",
+            (req["money"], req["food"], req["materials"], req_steel, req_elec, req["amount"], country['id'])
+        )
+        await callback.answer(f"✅ Успешно куплено: {req['amount']} {req['name']}!", show_alert=False)
         
-    await execute_db(
-        f"UPDATE countries SET budget = budget - ?, food = food - ?, materials = materials - ?, steel = steel - ?, electronics = electronics - ?, {db_field} = {db_field} + ? WHERE id = ?",
-        (req["money"], req["food"], req["materials"], req_steel, req_elec, req["amount"], country['id'])
-    )
-    await callback.answer(f"✅ Успешно куплено: {req['amount']} {req['name']}!", show_alert=False)
-    
-    if item in ["boats", "destroyers", "cruisers", "battleships", "submarines", "corvettes", "carriers"]:
-        await safe_edit(callback.message, "⚓️ <b>Военно-морские верфи:</b>", reply_markup=army_naval_kb())
-    elif item in ["fighters", "bombers", "helicopters"]:
-        await safe_edit(callback.message, "🛩 <b>Военно-воздушные силы:</b>", reply_markup=army_air_kb())
-    elif item in ["uavs", "jetuavs", "babayaga", "fpv"]:
-        await safe_edit(callback.message, "🛸 <b>Заводы Беспилотных Войск:</b>", reply_markup=army_drones_kb())
-    else:
-        await safe_edit(callback.message, "🪖 <b>Наземные войска и укрепления:</b>", reply_markup=army_ground_kb())
+        if item in ["boats", "destroyers", "cruisers", "battleships", "submarines", "corvettes", "carriers"]:
+            await safe_edit(callback.message, "⚓️ <b>Военно-морские верфи:</b>", reply_markup=army_naval_kb())
+        elif item in ["fighters", "bombers", "helicopters"]:
+            await safe_edit(callback.message, "🛩 <b>Военно-воздушные силы:</b>", reply_markup=army_air_kb())
+        elif item in ["uavs", "jetuavs", "babayaga", "fpv"]:
+            await safe_edit(callback.message, "🛸 <b>Заводы Беспилотных Войск:</b>", reply_markup=army_drones_kb())
+        else:
+            await safe_edit(callback.message, "🪖 <b>Наземные войска и укрепления:</b>", reply_markup=army_ground_kb())
+    except Exception as e:
+        logging.exception(e)
+        await callback.answer("Ошибка приобретения отрядов.", show_alert=True)
 
 # ========================================================================
 # ХЭНДЛЕРЫ: БОЕВАЯ СИСТЕМА
 # ========================================================================
 @dp.callback_query(F.data.startswith("prepwar_"))
 async def process_prepwar(callback: types.CallbackQuery):
-    if is_spam(callback.from_user.id): return await callback.answer("⏳")
-    target_id = int(callback.data.split("_")[1])
-    defender = await fetch_one("SELECT * FROM countries WHERE id = ?", (target_id,))
-    
-    geo_info = "\n<b>Ландшафт врага:</b>\n"
-    if defender.get('mountains', 0) > 0:
-        geo_info += f"⛰ Горы. Значительно повышает защиту врага.\n"
-    if defender.get('forests', 0) > 0:
-        geo_info += f"🌲 Леса. Усложняет наступление (штраф к атаке).\n"
-    if defender.get('deserts', 0) > 0:
-        geo_info += f"🏜 Пустыни. Открытая местность.\n"
-    if defender['rivers'] > 0:
-        geo_info += f"🏞 Реки ({defender['rivers']}). Нужны понтонные мосты.\n"
-    if defender['seas'] > 0:
-        geo_info += f"🌊 Море. Без кораблей штраф -50%!\n"
+    try:
+        if is_spam(callback.from_user.id): return await callback.answer("⏳")
+        target_id = int(callback.data.split("_")[1])
+        defender = await fetch_one("SELECT * FROM countries WHERE id = ?", (target_id,))
+        
+        geo_info = "\n<b>Ландшафт врага:</b>\n"
+        if defender.get('mountains', 0) > 0:
+            geo_info += f"⛰ Горы. Значительно повышает защиту врага.\n"
+        if defender.get('forests', 0) > 0:
+            geo_info += f"🌲 Леса. Усложняет наступление (штраф к атаке).\n"
+        if defender.get('deserts', 0) > 0:
+            geo_info += f"🏜 Пустыни. Открытая местность.\n"
+        if defender.get('rivers', 0) > 0:
+            geo_info += f"🏞 Реки ({defender.get('rivers')}). Нужны понтонные мосты.\n"
+        if defender.get('seas', 0) > 0:
+            geo_info += f"🌊 Море. Без кораблей штраф -50%!\n"
 
-    await safe_edit(callback.message, 
-        f"⚔️ <b>Подготовка к вторжению в {df(defender['flag'])} {defender['name']}</b>\n{geo_info}\n",
-        reply_markup=tactics_kb(target_id)
-    )
-    await callback.answer()
+        await safe_edit(callback.message, 
+            f"⚔️ <b>Подготовка к вторжению в {df(defender.get('flag'))} {defender.get('name')}</b>\n{geo_info}\n",
+            reply_markup=tactics_kb(target_id)
+        )
+        await callback.answer()
+    except Exception as e:
+        logging.exception(e)
+        await callback.answer("Ошибка планирования атаки.", show_alert=True)
 
 @dp.callback_query(F.data.startswith("spy_"))
 async def process_spy(callback: types.CallbackQuery):
-    cd = get_attack_cooldown(callback.from_user.id)
-    if cd > 0:
-        return await callback.answer(f"⏳ Шпионы еще в пути! Доступно через {cd} сек.", show_alert=True)
+    try:
+        cd = get_attack_cooldown(callback.from_user.id)
+        if cd > 0:
+            return await callback.answer(f"⏳ Шпионы еще в пути! Доступно через {cd} сек.", show_alert=True)
+            
+        target_id = int(callback.data.split("_")[1])
+        attacker = await fetch_one("SELECT * FROM countries WHERE owner_id = ?", (callback.from_user.id,))
+        defender = await fetch_one("SELECT * FROM countries WHERE id = ?", (target_id,))
         
-    target_id = int(callback.data.split("_")[1])
-    attacker = await fetch_one("SELECT * FROM countries WHERE owner_id = ?", (callback.from_user.id,))
-    defender = await fetch_one("SELECT * FROM countries WHERE id = ?", (target_id,))
-    
-    if attacker['spies'] < 1:
-        return await callback.answer("Нет шпионов!", show_alert=True)
+        if attacker.get('spies', 0) < 1:
+            return await callback.answer("Нет шпионов!", show_alert=True)
+            
+        await execute_db("UPDATE countries SET spies = spies - 1 WHERE id = ?", (attacker['id'],))
+        set_attack_cooldown(callback.from_user.id)
         
-    await execute_db("UPDATE countries SET spies = spies - 1 WHERE id = ?", (attacker['id'],))
-    set_attack_cooldown(callback.from_user.id)
-    
-    if random.random() < 0.2:
-        await callback.answer("Операция провалена!", show_alert=True)
-        return await safe_edit(callback.message, "💥 <b>Провал операции!</b>\nШпион раскрыт.", reply_markup=tactics_kb(target_id))
-        
-    def_power_est = get_base_power(defender)
-    text = (
-        f"🕵️‍♂️ <b>Секретный рапорт по {df(defender['flag'])} {defender['name']}</b>:\n\n"
-        f"💰 Бюджет: ~{defender['budget']}$ | 🛢 Нефть: {defender['oil']}\n"
-        f"🪖 Наземные: {defender['infantry']} пех, {defender['tanks']} танков\n"
-        f"⛴ Флот: {defender['destroyers']} Эсм. | {defender['cruisers']} Крейс. | {defender['battleships']} Линкор.\n"
-        f"🛩 Авиация и Дроны присутствуют.\n"
-        f"🛡 Укрепления: {defender['bunkers']} бункеров | {defender.get('sam_systems',0)} ЗРК\n\n"
-        f"📊 Оценочная базовая мощь: <b>{def_power_est}</b>\n"
-    )
-    await safe_edit(callback.message, text, reply_markup=tactics_kb(target_id))
-    await callback.answer()
+        if random.random() < 0.2:
+            await callback.answer("Операция провалена!", show_alert=True)
+            return await safe_edit(callback.message, "💥 <b>Провал операции!</b>\nШпион раскрыт.", reply_markup=tactics_kb(target_id))
+            
+        def_power_est = get_base_power(defender)
+        text = (
+            f"🕵️‍♂️ <b>Секретный рапорт по {df(defender.get('flag'))} {defender.get('name')}</b>:\n\n"
+            f"💰 Бюджет: ~{defender.get('budget', 0)}$ | 🛢 Нефть: {defender.get('oil', 0)}\n"
+            f"🪖 Наземные: {defender.get('infantry', 0)} пех, {defender.get('tanks', 0)} танков\n"
+            f"⛴ Флот: {defender.get('destroyers', 0)} Эсм. | {defender.get('cruisers', 0)} Крейс. | {defender.get('battleships', 0)} Линкор.\n"
+            f"🛩 Авиация и Дроны присутствуют.\n"
+            f"🛡 Укрепления: {defender.get('bunkers', 0)} бункеров | {defender.get('sam_systems',0)} ЗРК\n\n"
+            f"📊 Оценочная базовая мощь: <b>{def_power_est}</b>\n"
+        )
+        await safe_edit(callback.message, text, reply_markup=tactics_kb(target_id))
+        await callback.answer("Шпионский рапорт готов!")
+    except Exception as e:
+        logging.exception(e)
+        await callback.answer("Ошибка внедрения шпионов.", show_alert=True)
 
 @dp.callback_query(F.data.startswith("tactic_"))
 async def process_attack(callback: types.CallbackQuery):
-    cd = get_attack_cooldown(callback.from_user.id)
-    if cd > 0:
-        return await callback.answer(f"⏳ Войска на перегруппировке! Атака доступна через {cd} сек.", show_alert=True)
-
-    parts = callback.data.split("_")
-    tactic, target_id = parts[1], int(parts[2])
-    
-    attacker = await fetch_one("SELECT * FROM countries WHERE owner_id = ?", (callback.from_user.id,))
-    defender = await fetch_one("SELECT * FROM countries WHERE id = ?", (target_id,))
-    
-    if not attacker or not defender: 
-        return await callback.answer("Ошибка данных.", show_alert=True)
-    if attacker['id'] == defender['id']: 
-        return await callback.answer("Нельзя напасть на себя!", show_alert=True)
-    
-    if attacker['food'] < 200 or attacker['oil'] < 100:
-        return await callback.answer("❌ Для мобилизации армии нужно 200 Еды и 100 Нефти!", show_alert=True)
-        
-    await execute_db("UPDATE countries SET food = food - 200, oil = oil - 100 WHERE id = ?", (attacker['id'],))
-    set_attack_cooldown(callback.from_user.id)
-    
-    await safe_edit(callback.message, "🚀 <b>Войска пересекают границу...</b>\n\n🛰 Идет оценка обстановки...")
-    await asyncio.sleep(2)
-
     try:
+        cd = get_attack_cooldown(callback.from_user.id)
+        if cd > 0:
+            return await callback.answer(f"⏳ Войска на перегруппировке! Атака доступна через {cd} сек.", show_alert=True)
+
+        parts = callback.data.split("_")
+        tactic, target_id = parts[1], int(parts[2])
+        
+        attacker = await fetch_one("SELECT * FROM countries WHERE owner_id = ?", (callback.from_user.id,))
+        defender = await fetch_one("SELECT * FROM countries WHERE id = ?", (target_id,))
+        
+        if not attacker or not defender: 
+            return await callback.answer("Ошибка данных.", show_alert=True)
+        if attacker['id'] == defender['id']: 
+            return await callback.answer("Нельзя напасть на себя!", show_alert=True)
+        
+        if attacker.get('food', 0) < 200 or attacker.get('oil', 0) < 100:
+            return await callback.answer("❌ Для мобилизации армии нужно 200 Еды и 100 Нефти!", show_alert=True)
+            
+        await execute_db("UPDATE countries SET food = food - 200, oil = oil - 100 WHERE id = ?", (attacker['id'],))
+        set_attack_cooldown(callback.from_user.id)
+        
+        await safe_edit(callback.message, "🚀 <b>Войска пересекают границу...</b>\n\n🛰 Идет оценка обстановки...")
+        await asyncio.sleep(2)
+
         att_base = get_base_power(attacker)
         def_base = get_base_power(defender)
         
         att_rates = calc_economy_rates(attacker)
         def_rates = calc_economy_rates(defender)
         
-        att_ally_support, att_ally_count = await get_alliance_support(attacker['alliance_id'], attacker['id'])
-        def_ally_support, def_ally_count = await get_alliance_support(defender['alliance_id'], defender['id'])
+        att_ally_support, att_ally_count = await get_alliance_support(attacker.get('alliance_id'), attacker['id'])
+        def_ally_support, def_ally_count = await get_alliance_support(defender.get('alliance_id'), defender['id'])
 
-        report = [f"<blockquote>🌍 <b>БОЕВОЙ РАПОРТ: {df(attacker['flag'])} против {df(defender['flag'])}</b></blockquote>\n"]
+        report = [f"<blockquote>🌍 <b>БОЕВОЙ РАПОРТ: {df(attacker.get('flag'))} против {df(defender.get('flag'))}</b></blockquote>\n"]
         
         if att_ally_count > 0: 
             report.append(f"🤝 Ваш Альянс помог! (+{att_ally_support} мощи)")
@@ -1724,16 +1898,16 @@ async def process_attack(callback: types.CallbackQuery):
             report.append("🌲 Густые леса замедляют ваше наступление! Атака -10%.")
             
         bridges_used = 0
-        if defender['rivers'] > 0:
-            if attacker['bridges'] >= defender['rivers']:
+        if defender.get('rivers', 0) > 0:
+            if attacker.get('bridges', 0) >= defender.get('rivers', 0):
                 bridges_used = defender['rivers']
                 report.append(f"🌉 Использовано {bridges_used} понтонных мостов.")
             else:
                 att_total = int(att_total * 0.70)
                 report.append(f"🏞 <b>Катастрофа на переправе!</b> Штраф атаки: -30%!")
                 
-        if defender['seas'] > 0:
-            has_navy = (attacker['destroyers'] > 0 or attacker['cruisers'] > 0 or attacker['battleships'] > 0 or attacker.get('carriers',0) > 0 or attacker.get('submarines',0) > 0)
+        if defender.get('seas', 0) > 0:
+            has_navy = (attacker.get('destroyers', 0) > 0 or attacker.get('cruisers', 0) > 0 or attacker.get('battleships', 0) > 0 or attacker.get('carriers', 0) > 0 or attacker.get('submarines', 0) > 0)
             if has_navy:
                 report.append(f"⛴ Ваш флот успешно прикрыл десант и подавил береговую оборону врага!")
             else:
@@ -1745,7 +1919,7 @@ async def process_attack(callback: types.CallbackQuery):
         att_total = int(att_total * att_rates['att_mod'])
         def_total = int(def_total * def_rates['def_mod'])
         
-        att_mult = 1.0 + (min(attacker['war_wins'], 50) * 0.01)
+        att_mult = 1.0 + (min(attacker.get('war_wins', 0), 50) * 0.01)
         att_casualty_rate, def_casualty_rate = 0.5, 0.4
         
         if tactic == "blitz":
@@ -1762,18 +1936,18 @@ async def process_attack(callback: types.CallbackQuery):
         report.append(f"🛡 Мощь защиты: <b>{def_power}</b>\n")
 
         if att_power > def_power:
-            stolen_money = int(defender['budget'] * random.uniform(0.2, 0.4))
-            stolen_materials = int(defender['materials'] * random.uniform(0.2, 0.4))
-            stolen_steel = int(defender.get('steel',0) * random.uniform(0.2, 0.4))
-            stolen_electronics = int(defender.get('electronics',0) * random.uniform(0.2, 0.4))
-            stolen_oil = int(defender['oil'] * random.uniform(0.2, 0.4))
+            stolen_money = int(defender.get('budget', 0) * random.uniform(0.2, 0.4))
+            stolen_materials = int(defender.get('materials', 0) * random.uniform(0.2, 0.4))
+            stolen_steel = int(defender.get('steel', 0) * random.uniform(0.2, 0.4))
+            stolen_electronics = int(defender.get('electronics', 0) * random.uniform(0.2, 0.4))
+            stolen_oil = int(defender.get('oil', 0) * random.uniform(0.2, 0.4))
             stolen_territory = random.randint(1, 3)
             
-            att_inf_lost = int(attacker['infantry'] * 0.15)
-            att_tanks_lost = int(attacker['tanks'] * 0.10)
+            att_inf_lost = int(attacker.get('infantry', 0) * 0.15)
+            att_tanks_lost = int(attacker.get('tanks', 0) * 0.10)
             
-            def_inf_lost = int(defender['infantry'] * def_casualty_rate)
-            def_tanks_lost = int(defender['tanks'] * (def_casualty_rate / 2))
+            def_inf_lost = int(defender.get('infantry', 0) * def_casualty_rate)
+            def_tanks_lost = int(defender.get('tanks', 0) * (def_casualty_rate / 2))
             
             await execute_db("""
                 UPDATE countries 
@@ -1799,11 +1973,11 @@ async def process_attack(callback: types.CallbackQuery):
             report.append(f"🩸 <b>Наши потери:</b> {att_inf_lost} Пехоты, {att_tanks_lost} Танков")
             report.append(f"💥 <b>Урон врагу:</b> {def_inf_lost} Пехоты, {def_tanks_lost} Танков")
         else:
-            att_inf_lost = int(attacker['infantry'] * att_casualty_rate)
-            att_cars_lost = int(attacker['cars'] * att_casualty_rate)
-            att_tanks_lost = int(attacker['tanks'] * att_casualty_rate)
+            att_inf_lost = int(attacker.get('infantry', 0) * att_casualty_rate)
+            att_cars_lost = int(attacker.get('cars', 0) * att_casualty_rate)
+            att_tanks_lost = int(attacker.get('tanks', 0) * att_casualty_rate)
             
-            def_inf_lost = int(defender['infantry'] * (def_casualty_rate / 2))
+            def_inf_lost = int(defender.get('infantry', 0) * (def_casualty_rate / 2))
             
             await execute_db("UPDATE countries SET infantry = MAX(0, infantry - ?), cars = MAX(0, cars - ?), tanks = MAX(0, tanks - ?), bridges = bridges - ? WHERE id = ?", 
                              (att_inf_lost, att_cars_lost, att_tanks_lost, bridges_used, attacker['id']))
@@ -1817,13 +1991,11 @@ async def process_attack(callback: types.CallbackQuery):
 
         await safe_edit(callback.message, "\n".join(report), reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ В штаб", callback_data="menu_war")]]))
         await callback.answer()
-
     except Exception as e:
         logging.exception("Error during battle simulation")
         await safe_edit(
             callback.message, 
-            f"❌ <b>Критическая ошибка симуляции боя:</b>\n<code>{e}</code>\n\n"
-            f"Сообщите разработчику для исправления.",
+            f"❌ <b>Критическая ошибка симуляции боя:</b>\n<code>{e}</code>\n\nСообщите разработчику для исправления.",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ В штаб", callback_data="menu_war")]])
         )
         await callback.answer()
@@ -1984,7 +2156,7 @@ async def adm_res_target(message: types.Message, state: FSMContext):
         [InlineKeyboardButton(text="⚙️ Сталь", callback_data="res_steel"), InlineKeyboardButton(text="💻 Электр.", callback_data="res_electronics")],
         [InlineKeyboardButton(text="🛢 Нефть", callback_data="res_oil"), InlineKeyboardButton(text="🥩 Еда", callback_data="res_food")],
     ])
-    await message.answer(f"Выбрана страна: {df(target_country['flag'])} {target_country['name']}\nКакой ресурс изменить?", reply_markup=kb)
+    await message.answer(f"Выбрана страна: {df(target_country.get('flag'))} {target_country.get('name')}\nКакой ресурс изменить?", reply_markup=kb)
     await state.set_state(AdminState.give_type)
 
 @dp.callback_query(AdminState.give_type, F.data.startswith("res_"))
@@ -2023,7 +2195,7 @@ async def adm_troop_target(message: types.Message, state: FSMContext):
     if not target_country: return await message.answer("❌ Игрок не найден. Введите снова:")
     await state.update_data(res_target_id=target_country['id'])
     
-    await message.answer(f"Выбрана страна: {df(target_country['flag'])} {target_country['name']}\nКакой вид войск изменить?", reply_markup=admin_troop_type_kb())
+    await message.answer(f"Выбрана страна: {df(target_country.get('flag'))} {target_country.get('name')}\nКакой вид войск изменить?", reply_markup=admin_troop_type_kb())
     await state.set_state(AdminTroopState.give_type)
 
 @dp.callback_query(AdminTroopState.give_type, F.data.startswith("atr_"))
@@ -2118,7 +2290,7 @@ async def admin_list_countries(callback: types.CallbackQuery):
     if not await is_admin(callback.from_user.id): return
     countries = await fetch_all("SELECT id, flag, name FROM countries")
     text = "📋 <b>Список Стран (ID):</b>\n\n"
-    for c in countries: text += f"ID: <code>{c['id']}</code> | {df(c['flag'])} {c['name']}\n"
+    for c in countries: text += f"ID: <code>{c['id']}</code> | {df(c.get('flag'))} {c.get('name')}\n"
     await safe_edit(callback.message, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="adm_countries")]]))
     await callback.answer()
 
@@ -2138,7 +2310,7 @@ async def admin_del_country_finish(message: types.Message, state: FSMContext):
         if not country:
             return await message.answer("❌ Страна с таким ID не найдена.")
         await execute_db("DELETE FROM countries WHERE id = ?", (c_id,))
-        await message.answer(f"✅ Страна <b>{df(country['flag'])} {country['name']}</b> была стёрта с лица Земли!")
+        await message.answer(f"✅ Страна <b>{df(country.get('flag'))} {country.get('name')}</b> была стёрта с лица Земли!")
     except ValueError:
         await message.answer("❌ Пожалуйста, отправьте только число (ID).")
     await state.clear()
@@ -2150,7 +2322,7 @@ async def admin_list_all(callback: types.CallbackQuery):
     alliances = await fetch_all("SELECT id, flag, name FROM alliances")
     if not alliances: return await callback.message.answer("Альянсов нет.")
     text = "📋 <b>Список Альянсов (ID):</b>\n\n"
-    for a in alliances: text += f"ID: <code>{a['id']}</code> | {df(a['flag'])} {a['name']}\n"
+    for a in alliances: text += f"ID: <code>{a['id']}</code> | {df(a.get('flag'))} {a.get('name')}\n"
     await safe_edit(callback.message, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="adm_alliances")]]))
     await callback.answer()
 
@@ -2171,7 +2343,7 @@ async def admin_del_aly_finish(message: types.Message, state: FSMContext):
         await execute_db("UPDATE countries SET alliance_id = 0 WHERE alliance_id = ?", (a_id,))
         await execute_db("DELETE FROM alliances WHERE id = ?", (a_id,))
         await execute_db("DELETE FROM alliance_requests WHERE alliance_id = ?", (a_id,))
-        await message.answer(f"✅ Альянс <b>{df(aly['flag'])} {aly['name']}</b> был принудительно распущен администрацией!")
+        await message.answer(f"✅ Альянс <b>{df(aly.get('flag'))} {aly.get('name')}</b> был принудительно распущен администрацией!")
     except ValueError:
         await message.answer("❌ Нужно число (ID).")
     await state.clear()
