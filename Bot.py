@@ -32,10 +32,23 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-bot = Bot(
-    token=BOT_TOKEN, 
-    default=DefaultBotProperties(parse_mode="HTML")
-)
+# Безопасная инициализация бота с проверкой валидности токена
+try:
+    bot = Bot(
+        token=BOT_TOKEN, 
+        default=DefaultBotProperties(parse_mode="HTML")
+    )
+except Exception as err:
+    print("\n" + "="*80)
+    print("❌ КРИТИЧЕСКАЯ ОШИБКА ЗАПУСКА: НЕВЕРНЫЙ ТОКЕН ТЕЛЕГРАМ БОТА!")
+    print("="*80)
+    print(f"Текущее значение токена: {BOT_TOKEN}")
+    print("Пожалуйста, создайте нового бота в @BotFather, скопируйте токен и:")
+    print("1. Вставьте его в настройки хостинга Bothost (в поле переменных среды BOT_TOKEN)")
+    print("2. Либо замените строку BOT_TOKEN прямо в начале кода этого файла.")
+    print("="*80 + "\n")
+    raise SystemExit("Работа программы завершена из-за невалидного токена.")
+
 dp = Dispatcher()
 
 # Кэш в памяти для предотвращения спама (в продакшене лучше использовать Redis)
@@ -46,8 +59,25 @@ BUTTON_COOLDOWN = 1.0
 ATTACK_COOLDOWN = 300.0  
 
 # ========================================================================
-# ОПРЕДЕЛЕНИЕ ЗАКОНОВ, РЕЛИГИЙ И СТРОЕВ (БАФФЫ/ДЕБАФФЫ)
+# СЛОВАРНЫЕ ОПРЕДЕЛЕНИЯ (ЭМОДЗИ, БАФФЫ И ДЕБАФФЫ)
 # ========================================================================
+GOVERNMENT_INFO = {
+    "Демократия": {"name": "🗳️ Демократия", "desc": "💵 Бюджет +15%, 👥 Граждане +5%, ⚔️ Боевая мощь -10%"},
+    "Коммунизм": {"name": "🚩 Коммунизм", "desc": "🧱 Материалы +25%, 🛢 Нефть +25%, 💵 Бюджет -15%"},
+    "Монархия": {"name": "👑 Монархия", "desc": "💵 Бюджет +10%, 🏘 Скидка на новые поселения -10%, 👥 Рост граждан -15%"},
+    "Военная Хунта": {"name": "🪖 Военная Хунта", "desc": "⚔️ Сила армии +20%, ⚙️ Скидка на военную технику -15%, 💵 Бюджет -20%"},
+    "Теократия": {"name": "⛪ Теократия", "desc": "🥩 Еда +30%, 🕵️‍♂️ Скидка на шпионов -30%, 🧱 Материалы -15%"},
+    "Анархия": {"name": "🏴 Анархия", "desc": "Базовое состояние вашей державы. Эффектов нет."}
+}
+
+RELIGION_INFO = {
+    "Христианство": {"name": "✝️ Христианство", "desc": "👥 Рост граждан +10%, 💵 Доход бюджета +10%, ⚔️ Боевая мощь -5%"},
+    "Ислам": {"name": "☪️ Ислам", "desc": "⚔️ Защита и атака +5%, 🥩 Еда +10%, 💵 Доход бюджета -10%"},
+    "Буддизм": {"name": "☸️ Буддизм", "desc": "🥩 Производство еды +15%, 🩸 Потери в бою снижены на 20%, ⚔️ Сила армии -20%"},
+    "Атеизм": {"name": "⚛️ Атеизм", "desc": "🧱 Материалы +15%, 🛢 Нефть +10%, 👥 Рост граждан -10%"},
+    "Нет": {"name": "🕊️ Светское государство", "desc": "Религия не оказывает влияния на экономику вашей страны."}
+}
+
 LAWS_INFO = {
     1: {
         "name": "🚨 Военное положение",
@@ -516,20 +546,18 @@ def politics_hub_kb() -> InlineKeyboardMarkup:
     ])
 
 def gov_menu_kb(current_gov: str) -> InlineKeyboardMarkup:
-    govs = ["Демократия", "Коммунизм", "Монархия", "Военная Хунта", "Теократия", "Анархия"]
     kb = []
-    for g in govs:
+    for g, data in GOVERNMENT_INFO.items():
         status = "👑 " if g == current_gov else ""
-        kb.append([InlineKeyboardButton(text=f"{status}{g}", callback_data=f"gov_switch_{g}")])
+        kb.append([InlineKeyboardButton(text=f"{status}{data['name']}", callback_data=f"gov_switch_{g}")])
     kb.append([InlineKeyboardButton(text="◀️ В Политический хаб", callback_data="menu_politics_hub")])
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
 def rel_menu_kb(current_rel: str) -> InlineKeyboardMarkup:
-    rels = ["Христианство", "Ислам", "Буддизм", "Атеизм", "Нет"]
     kb = []
-    for r in rels:
+    for r, data in REL_INFO.items():
         status = "⛪️ " if r == current_rel else ""
-        kb.append([InlineKeyboardButton(text=f"{status}{r}", callback_data=f"rel_switch_{r}")])
+        kb.append([InlineKeyboardButton(text=f"{status}{data['name']}", callback_data=f"rel_switch_{r}")])
     kb.append([InlineKeyboardButton(text="◀️ В Политический хаб", callback_data="menu_politics_hub")])
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
@@ -797,9 +825,12 @@ async def process_menus(callback: CallbackQuery, state: FSMContext) -> None:
         geo = f"🏞 Рек: {country['rivers']} | 🌊 Море: {'Есть' if country['seas'] else 'Нет'}"
         photo_id = country['flag'].split(":")[1] if country['flag'].startswith("photo:") else None
 
+        gov_name = GOVERNMENT_INFO.get(country['government'], {"name": country['government']})["name"]
+        rel_name = RELIGION_INFO.get(country['religion'], {"name": country['religion']})["name"]
+
         text = (
             f"🌍 <b>Страна:</b> {df(country['flag'])} {country['name']} (Побед: {country['war_wins']} 🏅)\n"
-            f"👤 <b>Строй:</b> {country['government']} | ⛪️ <b>Вера:</b> {country['religion']}\n"
+            f"👤 <b>Строй:</b> {gov_name} | ⛪️ <b>Вера:</b> {rel_name}\n"
             f"👥 <b>Граждане:</b> {country['citizens']:,}\n"
             f"🤝 <b>Альянс:</b> {aly_text}\n"
             f"🗺 <b>Ландшафт:</b> {geo}\n"
@@ -814,7 +845,7 @@ async def process_menus(callback: CallbackQuery, state: FSMContext) -> None:
             f"🌉 Понтонные мосты: {country['bridges']}\n"
             f"➖➖➖➖➖➖➖➖➖➖\n"
             f"⚔️ <b>Наземные:</b> {country['infantry']} Пех. | {country['cars']} Авто | {country['trucks']} Груз | {country['tanks']} Танков\n"
-            f"⚓️ <b>Флот:</b> {country['destroyers']} Эсм. | {country['cruisers']} Крейс. | {country['battleships']} Линкоров\n"
+            f"⚓️ <b>Флот:</b> {country['destroyers']} Эсм. | {country['cruisers']} Крейс. | {country['battleships']} Lинк.\n"
             f"🛡 <b>Защита:</b> {country['bunkers']} Бункеры | 🕵️‍♂️ Шпионы: {country['spies']}"
         )
         await safe_edit(callback.message, text, reply_markup=main_menu_kb(), photo_id=photo_id)
@@ -886,10 +917,13 @@ async def process_menus(callback: CallbackQuery, state: FSMContext) -> None:
         active_ids = [int(x) for x in raw_laws.split(',') if x.strip().isdigit()]
         laws_str = ", ".join([LAWS_INFO[x]['name'] for x in active_ids]) if active_ids else "Нет принятых законов"
         
+        gov_name = GOVERNMENT_INFO.get(country['government'], {"name": country['government']})["name"]
+        rel_name = RELIGION_INFO.get(country['religion'], {"name": country['religion']})["name"]
+
         text = (
             f"🏛 <b>Политический штаб вашей страны</b>\n\n"
-            f"⚙️ <b>Текущий строй:</b> {country['government']}\n"
-            f"⛪️ <b>Гос. религия:</b> {country['religion']}\n"
+            f"⚙️ <b>Текущий строй:</b> {gov_name}\n"
+            f"⛪️ <b>Гос. религия:</b> {rel_name}\n"
             f"📜 <b>Активные законы:</b> {laws_str}\n"
         )
         await safe_edit(callback.message, text, reply_markup=politics_hub_kb())
@@ -942,10 +976,13 @@ async def callback_pol_hub(callback: CallbackQuery, state: FSMContext) -> None:
     active_ids = [int(x) for x in raw_laws.split(',') if x.strip().isdigit()]
     laws_str = ", ".join([LAWS_INFO[x]['name'] for x in active_ids]) if active_ids else "Нет принятых законов"
     
+    gov_name = GOVERNMENT_INFO.get(country['government'], {"name": country['government']})["name"]
+    rel_name = RELIGION_INFO.get(country['religion'], {"name": country['religion']})["name"]
+
     text = (
         f"🏛 <b>Политический штаб вашей страны</b>\n\n"
-        f"⚙️ <b>Текущий строй:</b> {country['government']}\n"
-        f"⛪️ <b>Гос. религия:</b> {country['religion']}\n"
+        f"⚙️ <b>Текущий строй:</b> {gov_name}\n"
+        f"⛪️ <b>Гос. религия:</b> {rel_name}\n"
         f"📜 <b>Активные законы:</b> {laws_str}\n"
     )
     await safe_edit(callback.message, text, reply_markup=politics_hub_kb())
@@ -974,7 +1011,7 @@ async def callback_gov_switch(callback: CallbackQuery) -> None:
         return
         
     await execute_db("UPDATE countries SET budget = budget - 2000, government = ? WHERE id = ?", (new_gov, country['id']))
-    await callback.answer(f"🎉 Вы успешно установили строй: {new_gov}!", show_alert=True)
+    await callback.answer(f"🎉 Вы успешно установили строй: {GOVERNMENT_INFO[new_gov]['name']}!", show_alert=True)
     await callback_gov_menu(callback)
 
 @dp.callback_query(F.data == "politics_rel_menu")
@@ -1000,7 +1037,7 @@ async def callback_rel_switch(callback: CallbackQuery) -> None:
         return
         
     await execute_db("UPDATE countries SET budget = budget - 1500, religion = ? WHERE id = ?", (new_rel, country['id']))
-    await callback.answer(f"⛪️ Вы официально приняли: {new_rel}!", show_alert=True)
+    await callback.answer(f"⛪️ Вы официально приняли: {RELIGION_INFO[new_rel]['name']}!", show_alert=True)
     await callback_rel_menu(callback)
 
 @dp.callback_query(F.data == "politics_laws_list")
@@ -1387,7 +1424,7 @@ async def process_army_buy(callback: CallbackQuery) -> None:
 @dp.callback_query(F.data.startswith("prepwar_"))
 async def process_prepwar(callback: CallbackQuery) -> None:
     if not callback.message: return
-    if is_spam(callback.fromuser.id if hasattr(callback, 'from_user') else callback.from_user.id): 
+    if is_spam(callback.from_user.id): 
         await callback.answer("⏳")
         return
         
@@ -1505,7 +1542,7 @@ async def process_attack(callback: CallbackQuery) -> None:
                 report.append(f"🏞 <b>Катастрофа на переправе!</b> Штраф атаки: -30%!")
                 
         if defender['seas'] > 0:
-            has_navy = (attacker['destroyers'] > 0 or attacker['cruisers'] > 0 or attacker['battleships'] > 0 or attacker['ships'] > 0)
+            has_navy = (attacker['destroyers'] > 0 or attacker['cruisers'] > 0 or attacker['battleships'] > 0 or attacker.get('ships', 0) > 0)
             if has_navy:
                 report.append(f"⛴ Ваш флот успешно прикрыл десант и подавил береговую оборону врага!")
             else:
