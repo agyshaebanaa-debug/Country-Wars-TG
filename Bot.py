@@ -21,7 +21,6 @@ import aiosqlite
 # ========================================================================
 # КОНФИГУРАЦИЯ БОТА И ПЕРЕМЕННЫЕ
 # ========================================================================
-# Рекомендуется использовать переменные окружения: os.getenv("BOT_TOKEN", "ваш_токен")
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8932860761:AAHda6SvVX7SGEZyT4Jeej24gKONOSgXiXI")
 SUPER_ADMIN_ID = 5341904332 
 DB_NAME = "database.db"
@@ -32,7 +31,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Безопасная инициализация бота с проверкой валидности токена
 try:
     bot = Bot(
         token=BOT_TOKEN, 
@@ -42,16 +40,11 @@ except Exception as err:
     print("\n" + "="*80)
     print("❌ КРИТИЧЕСКАЯ ОШИБКА ЗАПУСКА: НЕВЕРНЫЙ ТОКЕН ТЕЛЕГРАМ БОТА!")
     print("="*80)
-    print(f"Текущее значение токена: {BOT_TOKEN}")
-    print("Пожалуйста, создайте нового бота в @BotFather, скопируйте токен и:")
-    print("1. Вставьте его в настройки хостинга Bothost (в поле переменных среды BOT_TOKEN)")
-    print("2. Либо замените строку BOT_TOKEN прямо в начале кода этого файла.")
-    print("="*80 + "\n")
     raise SystemExit("Работа программы завершена из-за невалидного токена.")
 
 dp = Dispatcher()
 
-# Кэш в памяти для предотвращения спама (в продакшене лучше использовать Redis)
+# Кэш в памяти для предотвращения спама
 user_last_action: Dict[int, float] = {}
 user_attack_cooldown: Dict[int, float] = {}
 
@@ -150,14 +143,14 @@ async def safe_edit(message: Message, text: str, reply_markup: Optional[InlineKe
             else:
                 await message.edit_text(text, reply_markup=reply_markup, parse_mode="HTML")
     except TelegramBadRequest:
-        pass # Игнорируем ошибки, если сообщение не изменилось
+        pass
 
 def df(flag: str) -> str:
     """Форматирование флага. Возвращает эмодзи-заглушку, если флаг является фото."""
     return "🖼" if flag.startswith("photo:") else flag
 
 # ========================================================================
-# БАЗА ДАННЫХ
+# ИСПРАВЛЕННАЯ БАЗА ДАННЫХ
 # ========================================================================
 async def init_db() -> None:
     """Инициализация таблиц базы данных и выполнение миграций."""
@@ -227,7 +220,6 @@ async def init_db() -> None:
         """)
         await db.execute("INSERT OR IGNORE INTO admins (user_id) VALUES (?)", (SUPER_ADMIN_ID,))
         
-        # Безопасные миграции колонок для старых версий БД
         new_columns = [
             ("bunkers", "INTEGER DEFAULT 0"), ("spies", "INTEGER DEFAULT 0"),
             ("war_wins", "INTEGER DEFAULT 0"), ("alliance_id", "INTEGER DEFAULT 0"),
@@ -246,42 +238,33 @@ async def init_db() -> None:
             try:
                 await db.execute(f"ALTER TABLE countries ADD COLUMN {col} {col_type}")
             except aiosqlite.OperationalError:
-                pass # Колонка уже существует
+                pass
         await db.commit()
 
-async def get_db_connection() -> aiosqlite.Connection:
-    """Создает соединение с БД с настройкой row_factory."""
-    db = await aiosqlite.connect(DB_NAME, timeout=10.0)
-    db.row_factory = aiosqlite.Row
-    return db
-
 async def fetch_one(query: str, params: tuple = ()) -> Optional[aiosqlite.Row]:
-    """Выполнение SELECT запроса, возвращающего одну строку."""
-    async with await get_db_connection() as db:
+    async with aiosqlite.connect(DB_NAME, timeout=10.0) as db:
+        db.row_factory = aiosqlite.Row
         async with db.execute(query, params) as cursor:
             return await cursor.fetchone()
 
 async def fetch_all(query: str, params: tuple = ()) -> List[aiosqlite.Row]:
-    """Выполнение SELECT запроса, возвращающего список строк."""
-    async with await get_db_connection() as db:
+    async with aiosqlite.connect(DB_NAME, timeout=10.0) as db:
+        db.row_factory = aiosqlite.Row
         async with db.execute(query, params) as cursor:
             return await cursor.fetchall()
 
 async def execute_db(query: str, params: tuple = ()) -> None:
-    """Выполнение INSERT/UPDATE/DELETE запросов."""
-    async with await get_db_connection() as db:
+    async with aiosqlite.connect(DB_NAME, timeout=10.0) as db:
         await db.execute(query, params)
         await db.commit()
 
 async def is_admin(user_id: int) -> bool:
-    """Проверка наличия прав администратора."""
     if user_id == SUPER_ADMIN_ID:
         return True
     res = await fetch_one("SELECT 1 FROM admins WHERE user_id = ?", (user_id,))
     return bool(res)
 
 async def update_username(user_id: int, username: Optional[str]) -> None:
-    """Обновление username пользователя в базе."""
     if username:
         await execute_db("UPDATE countries SET username = ? WHERE owner_id = ?", (username, user_id))
 
@@ -289,13 +272,11 @@ async def update_username(user_id: int, username: Optional[str]) -> None:
 # ИГРОВАЯ МЕХАНИКА И МАТЕМАТИКА
 # ========================================================================
 def calculate_multipliers(country: aiosqlite.Row) -> Dict[str, float]:
-    """Вычисление итоговых множителей на основе строя, религии и законов."""
     mults = {
         "budget": 1.0, "materials": 1.0, "oil": 1.0, "food": 1.0,
         "citizens": 1.0, "army_power": 1.0, "oil_cons": 1.0, "food_cons": 1.0
     }
     
-    # Влияние строя
     gov = country.get('government', 'Анархия')
     if gov == "Демократия":
         mults["budget"] += 0.15; mults["citizens"] += 0.05; mults["army_power"] -= 0.10
@@ -308,7 +289,6 @@ def calculate_multipliers(country: aiosqlite.Row) -> Dict[str, float]:
     elif gov == "Теократия":
         mults["food"] += 0.30; mults["materials"] -= 0.15
         
-    # Влияние религии
     rel = country.get('religion', 'Нет')
     if rel == "Христианство":
         mults["citizens"] += 0.10; mults["budget"] += 0.10; mults["army_power"] -= 0.05
@@ -319,7 +299,6 @@ def calculate_multipliers(country: aiosqlite.Row) -> Dict[str, float]:
     elif rel == "Атеизм":
         mults["materials"] += 0.15; mults["oil"] += 0.10; mults["citizens"] -= 0.10
         
-    # Влияние законов
     raw_laws = country.get('enacted_laws', '')
     active_ids = [int(x) for x in raw_laws.split(',') if x.strip().isdigit()]
     
@@ -333,7 +312,6 @@ def calculate_multipliers(country: aiosqlite.Row) -> Dict[str, float]:
     return mults
 
 def get_base_power(country: aiosqlite.Row) -> int:
-    """Вычисление базовой боевой мощи страны на основе количества техники и пехоты."""
     power = (
         country.get('infantry', 0) * 1 +
         country.get('cars', 0) * 2 +
@@ -347,16 +325,12 @@ def get_base_power(country: aiosqlite.Row) -> int:
     return power
 
 async def get_alliance_support(alliance_id: int, exclude_country_id: int) -> Tuple[int, int]:
-    """Вычисление поддержки от альянса. Возвращает (доп. мощь, количество союзников)."""
     if not alliance_id or alliance_id == 0:
         return 0, 0
-    
     members = await fetch_all("SELECT * FROM countries WHERE alliance_id = ? AND id != ?", (alliance_id, exclude_country_id))
     if not members:
         return 0, 0
-        
     total_ally_power = sum(get_base_power(m) for m in members)
-    # Альянс предоставляет 20% от своей общей мощи в виде поддержки
     support_power = int(total_ally_power * 0.20)
     return support_power, len(members)
 
@@ -364,11 +338,11 @@ async def get_alliance_support(alliance_id: int, exclude_country_id: int) -> Tup
 # ФОНОВЫЕ ЗАДАЧИ (ЭКОНОМИКА - 3 МИНУТЫ)
 # ========================================================================
 async def economy_tick() -> None:
-    """Фоновый цикл начисления ресурсов всем активным странам."""
     while True:
         await asyncio.sleep(180)
-        async with await get_db_connection() as db:
-            try:
+        try:
+            async with aiosqlite.connect(DB_NAME, timeout=10.0) as db:
+                db.row_factory = aiosqlite.Row
                 async with db.execute("SELECT * FROM countries WHERE owner_id IS NOT NULL AND is_unclaimed = 0") as cursor:
                     countries = await cursor.fetchall()
                 
@@ -413,14 +387,12 @@ async def economy_tick() -> None:
                         WHERE id = ?
                     """, (new_budget, new_materials, new_food, new_oil, new_citizens,
                           final_infantry, final_cars, final_tanks, c['id']))
-                    
-                    # Небольшая пауза, чтобы не блокировать event loop при тысячах стран
                     await asyncio.sleep(0.001)
                     
                 await db.commit()
                 logger.info(f"[{datetime.now().strftime('%H:%M:%S')}] Экономика: Тик 3 минуты успешно завершен.")
-            except Exception as e:
-                logger.error(f"Ошибка в цикле экономики: {e}")
+        except Exception as e:
+            logger.error(f"Ошибка в цикле экономики: {e}")
 
 # ========================================================================
 # МАШИНА СОСТОЯНИЙ (FSM)
@@ -555,7 +527,7 @@ def gov_menu_kb(current_gov: str) -> InlineKeyboardMarkup:
 
 def rel_menu_kb(current_rel: str) -> InlineKeyboardMarkup:
     kb = []
-    for r, data in REL_INFO.items():
+    for r, data in RELIGION_INFO.items():
         status = "⛪️ " if r == current_rel else ""
         kb.append([InlineKeyboardButton(text=f"{status}{data['name']}", callback_data=f"rel_switch_{r}")])
     kb.append([InlineKeyboardButton(text="◀️ В Политический хаб", callback_data="menu_politics_hub")])
@@ -566,7 +538,6 @@ def laws_list_kb(enacted_laws_str: str) -> InlineKeyboardMarkup:
     kb = []
     for idx, l in LAWS_INFO.items():
         is_active = idx in active_ids
-        status_str = "📜 Действует" if is_active else "❌ Выключен"
         action_btn_text = f"Отменить ({l['cost_rep']}$)" if is_active else f"Принять ({l['cost_act']}$)"
         action_callback = f"law_toggle_{idx}_{'rep' if is_active else 'act'}"
         
@@ -584,7 +555,6 @@ def custom_menu_kb() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="◀️ В Политический хаб", callback_data="menu_politics_hub")]
     ])
 
-# Клавиатуры администратора (были упущены в оригинале)
 def admin_main_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🌍 Страны", callback_data="adm_countries"),
@@ -1511,7 +1481,7 @@ async def process_attack(callback: CallbackQuery) -> None:
     set_attack_cooldown(callback.from_user.id)
     
     await safe_edit(callback.message, "🚀 <b>Войска пересекают границу...</b>\n\n🛰 Идет оценка обстановки...")
-    await asyncio.sleep(2) # Имитация времени боя
+    await asyncio.sleep(2)
 
     try:
         att_base = get_base_power(attacker)
@@ -1815,7 +1785,6 @@ async def admin_list_countries(callback: CallbackQuery) -> None:
     text = "📋 <b>Список Стран (ID):</b>\n\n"
     for c in countries: text += f"ID: <code>{c['id']}</code> | {df(c['flag'])} {c['name']}\n"
     
-    # Ограничение длины текста Telegram (4096)
     if len(text) > 4000: text = text[:4000] + "...\n(Список обрезан)"
     await safe_edit(callback.message, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="adm_countries")]]))
     await callback.answer()
@@ -1942,7 +1911,6 @@ async def admin_rem_finish(message: Message, state: FSMContext) -> None:
 # ЗАПУСК БОТА
 # ========================================================================
 async def main() -> None:
-    """Главная функция инициализации и запуска бота."""
     logger.info("Инициализация базы данных...")
     await init_db()
     
