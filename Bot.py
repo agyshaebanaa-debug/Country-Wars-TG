@@ -22,7 +22,7 @@ import aiosqlite
 # КОНФИГУРАЦИЯ БОТА И ПЕРЕМЕННЫЕ
 # ========================================================================
 # Рекомендуется использовать переменные окружения: os.getenv("BOT_TOKEN", "ваш_токен")
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8596473788:AAGrGjeH2Dq_PHJQdmnUcE8OV-xt6t1cEIs")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8932860761:AAHda6SvVX7SGEZyT4Jeej24gKONOSgXiXI")
 SUPER_ADMIN_ID = 5341904332 
 DB_NAME = "database.db"
 
