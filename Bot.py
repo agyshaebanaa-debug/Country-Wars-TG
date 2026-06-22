@@ -238,7 +238,7 @@ async def init_db():
         
         await db.execute("INSERT OR IGNORE INTO admins (user_id) VALUES (?)", (SUPER_ADMIN_ID,))
         
-        # Обширная миграция для добавления новых колонок в старые БД
+        # Обширная миграция для добавления новых колонок в старые БД (ГОРЯЧЕЕ ОБНОВЛЕНИЕ БЕЗ СТИРАНИЯ ДАННЫХ)
         new_columns = [
             ("bunkers", "INTEGER DEFAULT 0"), ("spies", "INTEGER DEFAULT 0"),
             ("war_wins", "INTEGER DEFAULT 0"), ("alliance_id", "INTEGER DEFAULT 0"),
@@ -292,6 +292,7 @@ async def fetch_one(query, params=()):
             result = await cursor.fetchone()
             if result:
                 return dict(result)
+                
             return None
     finally:
         await db.close()
@@ -529,11 +530,11 @@ def shop_main_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✈️ Секретный истребитель F-16 (50 ⭐️)", callback_data="shop_buy_f16")],
         [InlineKeyboardButton(text="💰 Бюджет (1⭐️ = 1500 💰)", callback_data="shop_res_budget"),
-         InlineKeyboardButton(text="🧱 Материалы (1⭐️ = 150 🧱)")],
+         InlineKeyboardButton(text="🧱 Материалы (1⭐️ = 150 🧱)", callback_data="shop_res_materials")],
         [InlineKeyboardButton(text="⚙️ Сталь (1⭐️ = 100 ⚙️)", callback_data="shop_res_steel"),
-         InlineKeyboardButton(text="💻 Электроника (1⭐️ = 80 💻)")],
+         InlineKeyboardButton(text="💻 Электроника (1⭐️ = 80 💻)", callback_data="shop_res_electronics")],
         [InlineKeyboardButton(text="🛢 Нефть (1⭐️ = 250 🛢)", callback_data="shop_res_oil"),
-         InlineKeyboardButton(text="🥩 Еда (1⭐️ = 500 🥩)")],
+         InlineKeyboardButton(text="🥩 Еда (1⭐️ = 500 🥩)", callback_data="shop_res_food")],
         [InlineKeyboardButton(text="◀️ Назад", callback_data="menu_main")]
     ])
 
@@ -757,7 +758,7 @@ def profile_delete_kb():
 # ========================================================================
 def get_base_power(country):
     """Суммирует общую боевую мощь всех родов войск игрока."""
-    c = country
+    c = dict(country)
     power = (c.get('infantry', 0) * 1) + \
             (c.get('machine_guns', 0) * 3) + \
             (c.get('mortars', 0) * 5) + \
@@ -784,7 +785,7 @@ def get_base_power(country):
             (c.get('battleships', 0) * 500) + \
             (c.get('carriers', 0) * 1000) + \
             (c.get('bunkers', 0) * 50) + \
-            (c.get('f16', 0) * 1000) # F-16 даёт сильную секретную боевую мощь!
+            (c.get('f16', 0) * 1000) # Секретная боевая мощь
             
     if 'ships' in c and c['ships'] > 0:
         power += c['ships'] * 50
@@ -1195,7 +1196,6 @@ async def process_menus(callback: types.CallbackQuery, state: FSMContext):
                 f"🛸 <b>Дроны:</b> {country.get('uavs',0)} БПЛА | {country.get('jet_uavs',0)} Реак. | {country.get('baba_yaga',0)} Б.Яга | {country.get('fpv_drones',0)} ФПВ\n"
                 f"⚓️ <b>Флот:</b> {country.get('boats', 0)} Лодок | {country.get('corvettes',0)} Корв. | {country.get('submarines',0)} Подл. | {country.get('destroyers', 0)} Эсм. | {country.get('cruisers', 0)} Крейс. | {country.get('battleships', 0)} Линк. | {country.get('carriers',0)} Авианос.\n"
                 f"🛡 <b>Защита:</b> {country.get('bunkers', 0)} Бункеры | 🕵️‍♂️ Шпионы: {country.get('spies', 0)}"
-                # F-16 скрыт в моя страна (по ТЗ: нигде не увидишь этот истребитель, но он даёт мощь)
             )
             
             p_kb = main_menu_kb().inline_keyboard.copy()
@@ -1223,8 +1223,8 @@ async def process_menus(callback: types.CallbackQuery, state: FSMContext):
                 f"<b>Склады и запасы:</b>\n"
                 f"💵 Бюджет: {country.get('budget', 0):,}$\n"
                 f"🧱 Материалы: {country.get('materials', 0):,}\n"
-                f"⚙️ Сталь: {country.get('steel',0):,}\n"
-                f"💻 Электроника: {country.get('electronics',0):,}\n"
+                f"⚙️ Сталь: {country.get('steel', 0):,}\n"
+                f"💻 Электроника: {country.get('electronics', 0):,}\n"
                 f"🛢 Нефть: {country.get('oil', 0):,}\n"
                 f"🥩 Еда: {country.get('food', 0):,}\n\n"
                 f"<b>Приток ресурсов (за 1 тик / 3 мин):</b>\n"
@@ -1240,7 +1240,7 @@ async def process_menus(callback: types.CallbackQuery, state: FSMContext):
 
         elif action == "army":
             await safe_edit(callback.message, 
-                f"🪖 <b>Министерство Обороны</b>\n\nВыберите категорию войск:\n💵 Доступно: {country.get('budget', 0)}$ | 🧱 {country.get('materials', 0)} мат. | ⚙️ {country.get('steel',0)} стали | 💻 {country.get('electronics',0)} электр. | 🥩 {country.get('food', 0)} еды", 
+                f"🪖 <b>Министерство Обороны</b>\n\nВыберите категорию войск:\n💵 Доступно: {country.get('budget', 0)}$ | 🧱 {country.get('materials', 0)} мат. | ⚙️ {country.get('steel', 0)} стали | 💻 {country.get('electronics', 0)} электр. | 🥩 {country.get('food', 0)} еды", 
                 reply_markup=army_main_kb()
             )
             await callback.answer()
@@ -1327,7 +1327,7 @@ async def process_menus(callback: types.CallbackQuery, state: FSMContext):
         await callback.answer("❌ Сбой в обработке меню. Пожалуйста, попробуйте еще раз.", show_alert=True)
 
 # ========================================================================
-# ДАКТИЧЕСКИЙ ДОНАТ МАГАЗИН (TELEGRAM STARS)
+# ПЛАТЕЖИ (TELEGRAM STARS)
 # ========================================================================
 @dp.callback_query(F.data == "shop_buy_f16")
 async def shop_buy_f16(callback: types.CallbackQuery):
@@ -2060,14 +2060,14 @@ async def process_attack(callback: types.CallbackQuery):
 
         att_total = att_base + att_ally_support
         
-        # Интеграция секретных F-16 в сводку результатов боя
+        # Интеграция секретных F-16 в сводку результатов боя (НЕ ОТОБРАЖАЯ ИХ В ПРОФИЛЕ)
         att_f16 = attacker.get('f16', 0)
         def_f16 = defender.get('f16', 0)
         
         if att_f16 > 0:
-            report.append(f"⚡️ <b>Секретная авиация:</b> Ваши истребители F-16 Falcon ({att_f16} шт.) осуществили прецизионные ракетные удары, подавив ПВО и наземные силы противника!")
+            report.append(f"✈️ <b>Секретная авиация:</b> Ваши скрытые истребители F-16 Falcon ({att_f16} шт.) нанесли высокоточные сокрушительные удары по оборонительным рубежам врага!")
         if def_f16 > 0:
-            report.append(f"⚠️ <b>Превосходство врага в воздухе!</b> Вражеские скрытые истребители F-16 Falcon ({def_f16} шт.) перехватили наши штурмовики и сорвали артподготовку!")
+            report.append(f"⚠️ <b>Превосходство врага в воздухе!</b> Скрытая эскадрилья F-16 Falcon ({def_f16} шт.) противника перехватила наши передовые колонны и нанесла серьезный урон авиации!")
 
         # Ландшафтные модификаторы
         if defender.get('mountains', 0) > 0:
