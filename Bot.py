@@ -701,7 +701,6 @@ async def process_menus(callback: types.CallbackQuery, state: FSMContext):
             await safe_edit(callback.message, text, reply_markup=alliance_member_kb(is_leader))
 
     elif action == "war":
-        # Перемешивание целей через ORDER BY RANDOM()
         targets = await fetch_all("SELECT * FROM countries WHERE id != ? AND is_unclaimed = 0 ORDER BY RANDOM() LIMIT 10", (country['id'],))
         if not targets:
             return await callback.answer("В мире пока нет других стран для атаки!", show_alert=True)
@@ -959,8 +958,10 @@ async def process_attack(callback: types.CallbackQuery):
     attacker = await fetch_one("SELECT * FROM countries WHERE owner_id = ?", (callback.from_user.id,))
     defender = await fetch_one("SELECT * FROM countries WHERE id = ?", (target_id,))
     
-    if not attacker or not defender: return await callback.answer("Ошибка данных.", show_alert=True)
-    if attacker['id'] == defender['id']: return await callback.answer("Нельзя напасть на себя!", show_alert=True)
+    if not attacker or not defender: 
+        return await callback.answer("Ошибка данных.", show_alert=True)
+    if attacker['id'] == defender['id']: 
+        return await callback.answer("Нельзя напасть на себя!", show_alert=True)
     
     if attacker['food'] < 200 or attacker['oil'] < 100:
         return await callback.answer("❌ Для мобилизации армии нужно 200 Еды и 100 Нефти!", show_alert=True)
@@ -971,107 +972,120 @@ async def process_attack(callback: types.CallbackQuery):
     await safe_edit(callback.message, "🚀 <b>Войска пересекают границу...</b>\n\n🛰 Идет оценка обстановки...")
     await asyncio.sleep(2)
 
-    att_base = get_base_power(attacker)
-    def_base = get_base_power(defender)
-    
-    att_ally_support, att_ally_count = await get_alliance_support(attacker['alliance_id'], attacker['id'])
-    def_ally_support, def_ally_count = await get_alliance_support(defender['alliance_id'], defender['id'])
+    try:
+        att_base = get_base_power(attacker)
+        def_base = get_base_power(defender)
+        
+        att_ally_support, att_ally_count = await get_alliance_support(attacker['alliance_id'], attacker['id'])
+        def_ally_support, def_ally_count = await get_alliance_support(defender['alliance_id'], defender['id'])
 
-    report = [f"<blockquote>🌍 <b>БОЕВОЙ РАПОРТ: {df(attacker['flag'])} против {df(defender['flag'])}</b></blockquote>\n"]
-    
-    if att_ally_count > 0: report.append(f"🤝 Ваш Альянс помог! (+{att_ally_support} мощи)")
-    if def_ally_count > 0: report.append(f"⚠️ Альянс врага защищает его! (+{def_ally_support} мощи)")
+        report = [f"<blockquote>🌍 <b>БОЕВОЙ РАПОРТ: {df(attacker['flag'])} против {df(defender['flag'])}</b></blockquote>\n"]
+        
+        if att_ally_count > 0: 
+            report.append(f"🤝 Ваш Альянс помог! (+{att_ally_support} мощи)")
+        if def_ally_count > 0: 
+            report.append(f"⚠️ Альянс врага защищает его! (+{def_ally_support} мощи)")
 
-    att_total = att_base + att_ally_support
-    
-    bridges_used = 0
-    if defender['rivers'] > 0:
-        if attacker['bridges'] >= defender['rivers']:
-            bridges_used = defender['rivers']
-            report.append(f"🌉 Использовано {bridges_used} понтонных мостов.")
-        else:
-            att_total = int(att_total * 0.70)
-            report.append(f"🏞 <b>Катастрофа на переправе!</b> Штраф атаки: -30%!")
+        att_total = att_base + att_ally_support
+        
+        bridges_used = 0
+        if defender['rivers'] > 0:
+            if attacker['bridges'] >= defender['rivers']:
+                bridges_used = defender['rivers']
+                report.append(f"🌉 Использовано {bridges_used} понтонных мостов.")
+            else:
+                att_total = int(att_total * 0.70)
+                report.append(f"🏞 <b>Катастрофа на переправе!</b> Штраф атаки: -30%!")
+                
+        if defender['seas'] > 0:
+            has_navy = (attacker['destroyers'] > 0 or attacker['cruisers'] > 0 or attacker['battleships'] > 0 or attacker['ships'] > 0)
+            if has_navy:
+                report.append(f"⛴ Ваш флот успешно прикрыл десант и подавил береговую оборону врага!")
+            else:
+                att_total = int(att_total * 0.50)
+                report.append(f"🌊 <b>Смертельный десант!</b> У вас нет флота. Штраф атаки: -50%!")
+
+        def_total = def_base + def_ally_support
+        att_mult = 1.0 + (min(attacker['war_wins'], 50) * 0.01)
+        att_casualty_rate, def_casualty_rate = 0.5, 0.4
+        
+        if tactic == "blitz":
+            att_mult *= 1.3
+            att_casualty_rate = 0.7
+        elif tactic == "siege":
+            att_mult *= 0.9
+            att_casualty_rate = 0.2
+
+        att_power = int(att_total * att_mult * random.uniform(0.9, 1.2))
+        def_power = int(def_total * random.uniform(0.9, 1.2))
+
+        report.append(f"\n⚔️ Мощь атаки: <b>{att_power}</b>")
+        report.append(f"🛡 Мощь защиты: <b>{def_power}</b>\n")
+
+        if att_power > def_power:
+            stolen_money = int(defender['budget'] * random.uniform(0.2, 0.4))
+            stolen_materials = int(defender['materials'] * random.uniform(0.2, 0.4))
+            stolen_oil = int(defender['oil'] * random.uniform(0.2, 0.4))
+            stolen_territory = random.randint(1, 3)
             
-    if defender['seas'] > 0:
-        has_navy = (attacker['destroyers'] > 0 or attacker['cruisers'] > 0 or attacker['battleships'] > 0 or attacker.get('ships', 0) > 0)
-        if has_navy:
-            report.append(f"⛴ Ваш флот успешно прикрыл десант и подавил береговую оборону врага!")
+            att_inf_lost = int(attacker['infantry'] * 0.15)
+            att_tanks_lost = int(attacker['tanks'] * 0.10)
+            
+            def_inf_lost = int(defender['infantry'] * def_casualty_rate)
+            def_tanks_lost = int(defender['tanks'] * (def_casualty_rate / 2))
+            
+            await execute_db("""
+                UPDATE countries 
+                SET budget = budget + ?, materials = materials + ?, oil = oil + ?,
+                    territory = territory + ?, war_wins = war_wins + 1,
+                    infantry = MAX(0, infantry - ?), tanks = MAX(0, tanks - ?),
+                    bridges = bridges - ? WHERE id = ?
+            """, (stolen_money, stolen_materials, stolen_oil, stolen_territory, att_inf_lost, att_tanks_lost, bridges_used, attacker['id']))
+            
+            await execute_db("""
+                UPDATE countries 
+                SET budget = MAX(0, budget - ?), materials = MAX(0, materials - ?), oil = MAX(0, oil - ?),
+                    territory = MAX(1, territory - ?), gdp = MAX(10, gdp - ?),
+                    infantry = MAX(0, infantry - ?), tanks = MAX(0, tanks - ?), bunkers = MAX(0, bunkers - 1)
+                WHERE id = ?
+            """, (stolen_money, stolen_materials, stolen_oil, stolen_territory, stolen_territory * 5, 
+                  def_inf_lost, def_tanks_lost, defender['id']))
+            
+            report.append("🎉 <b>ПОБЕДА! Оборона противника прорвана!</b>")
+            report.append("<b>━━━━━━━━━━━━━━━━━━━━</b>")
+            report.append(f"💰 <b>Трофеи:</b> {stolen_money}$, {stolen_materials} Мат., {stolen_oil} Нефти")
+            report.append(f"🗺 <b>Аннексия:</b> {stolen_territory} км² (+{stolen_territory*5} к ВВП)")
+            report.append(f"🩸 <b>Наши потери:</b> {att_inf_lost} Пехоты, {att_tanks_lost} Танков")
+            report.append(f"💥 <b>Урон врагу:</b> {def_inf_lost} Пехоты, {def_tanks_lost} Танков")
         else:
-            att_total = int(att_total * 0.50)
-            report.append(f"🌊 <b>Смертельный десант!</b> У вас нет флота. Штраф атаки: -50%!")
+            att_inf_lost = int(attacker['infantry'] * att_casualty_rate)
+            att_cars_lost = int(attacker['cars'] * att_casualty_rate)
+            att_tanks_lost = int(attacker['tanks'] * att_casualty_rate)
+            
+            def_inf_lost = int(defender['infantry'] * (def_casualty_rate / 2))
+            
+            await execute_db("UPDATE countries SET infantry = MAX(0, infantry - ?), cars = MAX(0, cars - ?), tanks = MAX(0, tanks - ?), bridges = bridges - ? WHERE id = ?", 
+                             (att_inf_lost, att_cars_lost, att_tanks_lost, bridges_used, attacker['id']))
+            await execute_db("UPDATE countries SET infantry = MAX(0, infantry - ?) WHERE id = ?", 
+                             (def_inf_lost, defender['id']))
 
-    def_total = def_base + def_ally_support
-    att_mult = 1.0 + (min(attacker['war_wins'], 50) * 0.01)
-    att_casualty_rate, def_casualty_rate = 0.5, 0.4
-    
-    if tactic == "blitz":
-        att_mult *= 1.3
-        att_casualty_rate = 0.7
-    elif tactic == "siege":
-        att_mult *= 0.9
-        att_casualty_rate = 0.2
+            report.append("☠️ <b>ПОРАЖЕНИЕ! Наступление захлебнулось.</b>")
+            report.append("<b>━━━━━━━━━━━━━━━━━━━━</b>")
+            report.append(f"🩸 <b>Наши потери:</b> {att_inf_lost} Пехоты, {att_cars_lost} Авто, {att_tanks_lost} Танков")
+            report.append(f"🛡 <b>Потери врага:</b> {def_inf_lost} Пехоты")
 
-    att_power = int(att_total * att_mult * random.uniform(0.9, 1.2))
-    def_power = int(def_total * random.uniform(0.9, 1.2))
+        await safe_edit(callback.message, "\n".join(report), reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ В штаб", callback_data="menu_war")]]))
+        await callback.answer()
 
-    report.append(f"\n⚔️ Мощь атаки: <b>{att_power}</b>")
-    report.append(f"🛡 Мощь защиты: <b>{def_power}</b>\n")
-
-    if att_power > def_power:
-        stolen_money = int(defender['budget'] * random.uniform(0.2, 0.4))
-        stolen_materials = int(defender['materials'] * random.uniform(0.2, 0.4))
-        stolen_oil = int(defender['oil'] * random.uniform(0.2, 0.4))
-        stolen_territory = random.randint(1, 3)
-        
-        att_inf_lost = int(attacker['infantry'] * 0.15)
-        att_tanks_lost = int(attacker['tanks'] * 0.10)
-        
-        def_inf_lost = int(defender['infantry'] * def_casualty_rate)
-        def_tanks_lost = int(defender['tanks'] * (def_casualty_rate / 2))
-        
-        await execute_db("""
-            UPDATE countries 
-            SET budget = budget + ?, materials = materials + ?, oil = oil + ?,
-                territory = territory + ?, war_wins = war_wins + 1,
-                infantry = MAX(0, infantry - ?), tanks = MAX(0, tanks - ?),
-                bridges = bridges - ? WHERE id = ?
-        """, (stolen_money, stolen_materials, stolen_oil, stolen_territory, att_inf_lost, att_tanks_lost, bridges_used, attacker['id']))
-        
-        await execute_db("""
-            UPDATE countries 
-            SET budget = MAX(0, budget - ?), materials = MAX(0, materials - ?), oil = MAX(0, oil - ?),
-                territory = MAX(1, territory - ?), gdp = MAX(10, gdp - ?),
-                infantry = MAX(0, infantry - ?), tanks = MAX(0, tanks - ?), bunkers = MAX(0, bunkers - 1)
-            WHERE id = ?
-        """, (stolen_money, stolen_materials, stolen_oil, stolen_territory, stolen_territory * 5, 
-              def_inf_lost, def_tanks_lost, defender['id']))
-        
-        report.append("🎉 <b>ПОБЕДА! Оборона противника прорвана!</b>")
-        report.append("<b>━━━━━━━━━━━━━━━━━━━━</b>")
-        report.append(f"💰 <b>Трофеи:</b> {stolen_money}$, {stolen_materials} Мат., {stolen_oil} Нефти")
-        report.append(f"🗺 <b>Аннексия:</b> {stolen_territory} км² (+{stolen_territory*5} к ВВП)")
-        report.append(f"🩸 <b>Наши потери:</b> {att_inf_lost} Пехоты, {att_tanks_lost} Танков")
-        report.append(f"💥 <b>Урон врагу:</b> {def_inf_lost} Пехоты, {def_tanks_lost} Танков")
-    else:
-        att_inf_lost = int(attacker['infantry'] * att_casualty_rate)
-        att_cars_lost = int(attacker['cars'] * att_casualty_rate)
-        att_tanks_lost = int(attacker['tanks'] * att_casualty_rate)
-        
-        def_inf_lost = int(defender['infantry'] * (def_casualty_rate / 2))
-        
-        await execute_db("UPDATE countries SET infantry = MAX(0, infantry - ?), cars = MAX(0, cars - ?), tanks = MAX(0, tanks - ?), bridges = bridges - ? WHERE id = ?", 
-                         (att_inf_lost, att_cars_lost, att_tanks_lost, bridges_used, attacker['id']))
-        await execute_db("UPDATE countries SET infantry = MAX(0, infantry - ?) WHERE id = ?", 
-                         (def_inf_lost, defender['id']))
-
-        report.append("☠️ <b>ПОРАЖЕНИЕ! Наступление захлебнулось.</b>")
-        report.append("<b>━━━━━━━━━━━━━━━━━━━━</b>")
-        report.append(f"🩸 <b>Наши потери:</b> {att_inf_lost} Пехоты, {att_cars_lost} Авто, {att_tanks_lost} Танков")
-        report.append(f"🛡 <b>Потери врага:</b> {def_inf_lost} Пехоты")
-
-    await safe_edit(callback.message, "\n".join(report), reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ В штаб", callback_data="menu_war")]]))
-    await callback.answer()
+    except Exception as e:
+        logging.exception("Error during battle simulation")
+        await safe_edit(
+            callback.message, 
+            f"❌ <b>Критическая ошибка симуляции боя:</b>\n<code>{e}</code>\n\n"
+            f"Сообщите разработчику для исправления.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ В штаб", callback_data="menu_war")]])
+        )
+        await callback.answer()
 
 # ========================================================================
 # ХЭНДЛЕРЫ: АДМИН ПАНЕЛЬ
