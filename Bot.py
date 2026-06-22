@@ -198,7 +198,8 @@ async def init_db():
                 gov_type TEXT DEFAULT 'Не выбрано',
                 religion TEXT DEFAULT 'Атеизм',
                 active_laws TEXT DEFAULT '',
-                f16 INTEGER DEFAULT 0
+                f16 INTEGER DEFAULT 0,
+                oreshnik INTEGER DEFAULT 0
             )
         """)
         
@@ -270,7 +271,7 @@ async def init_db():
             ("fpv_drones", "INTEGER DEFAULT 0"), ("aa_guns", "INTEGER DEFAULT 0"), ("sam_systems", "INTEGER DEFAULT 0"),
             
             # Донатные эксклюзивы
-            ("f16", "INTEGER DEFAULT 0")
+            ("f16", "INTEGER DEFAULT 0"), ("oreshnik", "INTEGER DEFAULT 0")
         ]
         for col, col_type in new_columns:
             try:
@@ -528,7 +529,8 @@ def main_menu_kb():
 
 def shop_main_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✈️ Секретный истребитель F-16 (50 ⭐️)", callback_data="shop_buy_f16")],
+        [InlineKeyboardButton(text="✈️ Истребитель F-16 (50 ⭐️ | ⚔️5000)", callback_data="shop_buy_f16")],
+        [InlineKeyboardButton(text="🚀 Ракета «Орешник» (200 ⭐️ | ⚔️12000)", callback_data="shop_buy_oreshnik")],
         [InlineKeyboardButton(text="💰 Бюджет (1⭐️ = 1500 💰)", callback_data="shop_res_budget"),
          InlineKeyboardButton(text="🧱 Материалы (1⭐️ = 150 🧱)", callback_data="shop_res_materials")],
         [InlineKeyboardButton(text="⚙️ Сталь (1⭐️ = 100 ⚙️)", callback_data="shop_res_steel"),
@@ -540,13 +542,13 @@ def shop_main_kb():
 
 def economy_build_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🏭 Завод (5k$, 500 Мат.)", callback_data="build_factory"),
-         InlineKeyboardButton(text="🛢 Вышка (8k$, 1k Мат.)", callback_data="build_rig")],
-        [InlineKeyboardButton(text="🌾 Ферма (3k$, 200 Мат.)", callback_data="build_farm"),
-         InlineKeyboardButton(text="🌉 Мост (2k$, 800 Мат.)", callback_data="build_bridge")],
-        [InlineKeyboardButton(text="⚙️ Сталелитейный (10k$, 2k Мат.)", callback_data="build_steelmill")],
-        [InlineKeyboardButton(text="💻 Тех. Фабрика (20k$, 3k Мат., 1k Ст.)", callback_data="build_techfac")],
-        [InlineKeyboardButton(text="🏘 Основать Поселение (15k$, 2k Мат., 2k Еды)", callback_data="build_settlement")],
+        [InlineKeyboardButton(text="🏭 Завод (5k💰 500🧱)", callback_data="build_factory")],
+        [InlineKeyboardButton(text="🛢 Вышка (8k💰 1k🧱 100⚙️)", callback_data="build_rig")],
+        [InlineKeyboardButton(text="🌾 Ферма (3k💰 200🧱)", callback_data="build_farm")],
+        [InlineKeyboardButton(text="🌉 Мост (2k💰 800🧱 50⚙️)", callback_data="build_bridge")],
+        [InlineKeyboardButton(text="⚙️ Сталелитейный (10k💰 2k🧱)", callback_data="build_steelmill")],
+        [InlineKeyboardButton(text="💻 Тех. Фабрика (20k💰 3k🧱 1k⚙️)", callback_data="build_techfac")],
+        [InlineKeyboardButton(text="🏘 Основать Поселение (15k💰 2k🧱 2k🥩)", callback_data="build_settlement")],
         [InlineKeyboardButton(text="◀️ Назад", callback_data="menu_main")]
     ])
 
@@ -556,53 +558,54 @@ def army_main_kb():
         [InlineKeyboardButton(text="⚓️ Военно-морской флот", callback_data="menu_army_naval")],
         [InlineKeyboardButton(text="🛩 Воздушные силы", callback_data="menu_army_air")],
         [InlineKeyboardButton(text="🛸 Беспилотные Войска", callback_data="menu_army_drones")],
+        [InlineKeyboardButton(text="🚀 Ракетные войска (В разработке)", callback_data="menu_army_missiles")],
         [InlineKeyboardButton(text="◀️ Назад в штаб", callback_data="menu_main")]
     ])
 
 def army_ground_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🪖 10 Пехоты (100$)", callback_data="buy_infantry"),
-         InlineKeyboardButton(text="🎯 1 Пулемёт (200$)", callback_data="buy_machineguns")],
-        [InlineKeyboardButton(text="💥 1 Миномёт (400$)", callback_data="buy_mortars"),
-         InlineKeyboardButton(text="💥 1 Артиллерия (800$)", callback_data="buy_artillery")],
-        [InlineKeyboardButton(text="🚙 1 Авто (300$)", callback_data="buy_cars"),
-         InlineKeyboardButton(text="🚙 1 Хаммер (600$)", callback_data="buy_hummers")],
-        [InlineKeyboardButton(text="🚜 1 Воен.машина (1k$)", callback_data="buy_milcars"),
-         InlineKeyboardButton(text="🚛 1 Грузовик (500$)", callback_data="buy_trucks")],
-        [InlineKeyboardButton(text="🚜 1 Танк (2k$)", callback_data="buy_tanks"),
-         InlineKeyboardButton(text="🛡 Бункер (3k$)", callback_data="buy_bunkers")],
-        [InlineKeyboardButton(text="📡 1 Зенитка (1.5k$)", callback_data="buy_aaguns"),
-         InlineKeyboardButton(text="🚀 1 ЗРК (5k$)", callback_data="buy_sams")],
-        [InlineKeyboardButton(text="🕵️‍♂️ 1 Шпион (1k$)", callback_data="buy_spies")],
+        [InlineKeyboardButton(text="🪖 10 Пехоты (100💰 50🥩 | ⚔️10)", callback_data="buy_infantry")],
+        [InlineKeyboardButton(text="🎯 1 Пулемёт (200💰 50🥩 50🧱 10⚙️ | ⚔️3)", callback_data="buy_machineguns")],
+        [InlineKeyboardButton(text="💥 1 Миномёт (400💰 50🥩 150🧱 50⚙️ | ⚔️5)", callback_data="buy_mortars")],
+        [InlineKeyboardButton(text="💥 1 Артиллерия (800💰 300🧱 200⚙️ | ⚔️10)", callback_data="buy_artillery")],
+        [InlineKeyboardButton(text="🚙 1 Авто (300💰 100🧱 50⚙️ | ⚔️2)", callback_data="buy_cars")],
+        [InlineKeyboardButton(text="🚙 1 Хаммер (600💰 200🧱 100⚙️ | ⚔️5)", callback_data="buy_hummers")],
+        [InlineKeyboardButton(text="🚜 1 Воен.машина (1k💰 400🧱 200⚙️ | ⚔️8)", callback_data="buy_milcars")],
+        [InlineKeyboardButton(text="🚛 1 Грузовик (500💰 200🧱 100⚙️ | ⚔️4)", callback_data="buy_trucks")],
+        [InlineKeyboardButton(text="🚜 1 Танк (2k💰 1k🧱 500⚙️ | ⚔️20)", callback_data="buy_tanks")],
+        [InlineKeyboardButton(text="🛡 Бункер (3k💰 1.5k🧱 500⚙️ | 🛡50)", callback_data="buy_bunkers")],
+        [InlineKeyboardButton(text="📡 1 Зенитка (1.5k💰 500🧱 300⚙️ | ⚔️30)", callback_data="buy_aaguns")],
+        [InlineKeyboardButton(text="🚀 1 ЗРК (5k💰 1.5k🧱 800⚙️ 300💻 | ⚔️120)", callback_data="buy_sams")],
+        [InlineKeyboardButton(text="🕵️‍♂️ 1 Шпион (1k💰 | Разведка)", callback_data="buy_spies")],
         [InlineKeyboardButton(text="◀️ Назад в Военкомат", callback_data="menu_army")]
     ])
 
 def army_naval_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🛶 Обычная лодка (800$)", callback_data="buy_boats"),
-         InlineKeyboardButton(text="🚤 Корвет (1.5k$)", callback_data="buy_corvettes")],
-        [InlineKeyboardButton(text="🌊 Подлодка (2.5k$)", callback_data="buy_submarines"),
-         InlineKeyboardButton(text="🛥 Эсминец (3k$)", callback_data="buy_destroyers")],
-        [InlineKeyboardButton(text="🛳 Крейсер (7k$)", callback_data="buy_cruisers"),
-         InlineKeyboardButton(text="⛴ Линкор (15k$)", callback_data="buy_battleships")],
-        [InlineKeyboardButton(text="🛩 Авианосец (30k$)", callback_data="buy_carriers")],
+        [InlineKeyboardButton(text="🛶 Обычная лодка (800💰 200🧱 50⚙️ | ⚔️5)", callback_data="buy_boats")],
+        [InlineKeyboardButton(text="🚤 Корвет (1.5k💰 500🧱 400⚙️ | ⚔️20)", callback_data="buy_corvettes")],
+        [InlineKeyboardButton(text="🌊 Подлодка (2.5k💰 1k🧱 1k⚙️ 200💻 | ⚔️40)", callback_data="buy_submarines")],
+        [InlineKeyboardButton(text="🛥 Эсминец (3k💰 1k🧱 800⚙️ 100💻 | ⚔️50)", callback_data="buy_destroyers")],
+        [InlineKeyboardButton(text="🛳 Крейсер (7k💰 2.5k🧱 2k⚙️ 300💻 | ⚔️150)", callback_data="buy_cruisers")],
+        [InlineKeyboardButton(text="⛴ Линкор (15k💰 5k🧱 4k⚙️ 500💻 | ⚔️500)", callback_data="buy_battleships")],
+        [InlineKeyboardButton(text="🛩 Авианосец (30k💰 10k🧱 8k⚙️ 2k💻 | ⚔️1000)", callback_data="buy_carriers")],
         [InlineKeyboardButton(text="◀️ Назад в Военкомат", callback_data="menu_army")]
     ])
 
 def army_air_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✈️ Истребитель (5k$)", callback_data="buy_fighters")],
-        [InlineKeyboardButton(text="🛩 Бомбардировщик (12k$)", callback_data="buy_bombers")],
-        [InlineKeyboardButton(text="🚁 Боевой вертолет (4k$)", callback_data="buy_helicopters")],
+        [InlineKeyboardButton(text="✈️ Истребитель (5k💰 1k🧱 500⚙️ 200💻 | ⚔️100)", callback_data="buy_fighters")],
+        [InlineKeyboardButton(text="🛩 Бомбардировщик (12k💰 2k🧱 1k⚙️ 400💻 | ⚔️250)", callback_data="buy_bombers")],
+        [InlineKeyboardButton(text="🚁 Боевой вертолет (4k💰 800🧱 300⚙️ 100💻 | ⚔️80)", callback_data="buy_helicopters")],
         [InlineKeyboardButton(text="◀️ Назад в Военкомат", callback_data="menu_army")]
     ])
 
 def army_drones_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🛸 БПЛА-Разведчик (1k$)", callback_data="buy_uavs"),
-         InlineKeyboardButton(text="🚀 Реактивный БПЛА (3k$)", callback_data="buy_jetuavs")],
-        [InlineKeyboardButton(text="🦇 БПЛА: Баба Яга (2k$)", callback_data="buy_babayaga"),
-         InlineKeyboardButton(text="🐝 ФПВ-Дрон (200$)", callback_data="buy_fpv")],
+        [InlineKeyboardButton(text="🛸 БПЛА-Разведчик (1k💰 200🧱 50⚙️ 150💻 | ⚔️20)", callback_data="buy_uavs")],
+        [InlineKeyboardButton(text="🚀 Реактивный БПЛА (3k💰 500🧱 200⚙️ 400💻 | ⚔️60)", callback_data="buy_jetuavs")],
+        [InlineKeyboardButton(text="🦇 БПЛА: Баба Яга (2k💰 300🧱 100⚙️ 250💻 | ⚔️40)", callback_data="buy_babayaga")],
+        [InlineKeyboardButton(text="🐝 ФПВ-Дрон (200💰 50🧱 10⚙️ 30💻 | ⚔️15)", callback_data="buy_fpv")],
         [InlineKeyboardButton(text="◀️ Назад в Военкомат", callback_data="menu_army")]
     ])
 
@@ -785,7 +788,8 @@ def get_base_power(country):
             (c.get('battleships', 0) * 500) + \
             (c.get('carriers', 0) * 1000) + \
             (c.get('bunkers', 0) * 50) + \
-            (c.get('f16', 0) * 1000) # Секретная боевая мощь
+            (c.get('f16', 0) * 5000) + \
+            (c.get('oreshnik', 0) * 12000) # Секретная боевая мощь
             
     if 'ships' in c and c['ships'] > 0:
         power += c['ships'] * 50
@@ -979,7 +983,7 @@ async def tr_accept(callback: types.CallbackQuery):
         if not trade: 
             return await callback.answer("Сделка больше не действительна.", show_alert=True)
         
-        if callback.from_user.id != trade['receiver_id']: 
+        if callback.fromuser.id != trade['receiver_id']: 
             return await callback.answer("Это не для вас!", show_alert=True)
         
         sender = await fetch_one("SELECT * FROM countries WHERE owner_id = ?", (trade['sender_id'],))
@@ -1240,7 +1244,7 @@ async def process_menus(callback: types.CallbackQuery, state: FSMContext):
 
         elif action == "army":
             await safe_edit(callback.message, 
-                f"🪖 <b>Министерство Обороны</b>\n\nВыберите категорию войск:\n💵 Доступно: {country.get('budget', 0)}$ | 🧱 {country.get('materials', 0)} мат. | ⚙️ {country.get('steel', 0)} стали | 💻 {country.get('electronics', 0)} электр. | 🥩 {country.get('food', 0)} еды", 
+                f"🪖 <b>Министерство Обороны</b>\n\nВыберите категорию войск:\n💵 Доступно: {country.get('budget', 0):,}$ | 🧱 {country.get('materials', 0):,} мат. | ⚙️ {country.get('steel', 0):,} стали | 💻 {country.get('electronics', 0):,} электр. | 🥩 {country.get('food', 0):,} еды", 
                 reply_markup=army_main_kb()
             )
             await callback.answer()
@@ -1259,6 +1263,16 @@ async def process_menus(callback: types.CallbackQuery, state: FSMContext):
 
         elif action == "army_drones":
             await safe_edit(callback.message, "🛸 <b>Заводы Беспилотных Войск:</b>", reply_markup=army_drones_kb())
+            await callback.answer()
+            
+        elif action == "army_missiles":
+            await safe_edit(callback.message, 
+                "🚀 <b>Ракетные войска</b>\n\n"
+                "Инженеры активно работают над чертежами баллистических и крылатых ракет. "
+                "Этот вид вооружения появится в будущих обновлениях!\n\n"
+                "<i>(Вы можете приобрести гиперзвуковой ракетный комплекс «Орешник» в Донат Магазине прямо сейчас)</i>", 
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад в Военкомат", callback_data="menu_army")]])
+            )
             await callback.answer()
             
         elif action == "laws":
@@ -1298,7 +1312,8 @@ async def process_menus(callback: types.CallbackQuery, state: FSMContext):
             await callback.answer()
 
         elif action == "war":
-            targets = await fetch_all("SELECT * FROM countries WHERE id != ? AND is_unclaimed = 0 ORDER BY RANDOM() LIMIT 10", (country['id'],))
+            # Увеличен лимит до 50 чтобы охватить все страны игроков
+            targets = await fetch_all("SELECT * FROM countries WHERE id != ? AND is_unclaimed = 0 ORDER BY RANDOM() LIMIT 50", (country['id'],))
             if not targets:
                 return await callback.answer("В мире пока нет других стран для атаки!", show_alert=True)
                 
@@ -1335,11 +1350,28 @@ async def shop_buy_f16(callback: types.CallbackQuery):
         await bot.send_invoice(
             chat_id=callback.message.chat.id,
             title="✈️ Истребитель F-16 Falcon",
-            description="Секретное превосходство в воздухе. Дает +1000 к скрытой военной мощи и уникальное участие в боевых сводках!",
+            description="Секретное превосходство в воздухе. Дает +5000 к скрытой военной мощи и уникальное участие в боевых сводках!",
             payload="buy_f16",
             provider_token="",
             currency="XTR",
             prices=[LabeledPrice(label="F-16 Falcon", amount=50)]
+        )
+        await callback.answer()
+    except Exception as e:
+        logging.exception(e)
+        await callback.answer("❌ Не удалось сформировать инвойс.", show_alert=True)
+
+@dp.callback_query(F.data == "shop_buy_oreshnik")
+async def shop_buy_oreshnik(callback: types.CallbackQuery):
+    try:
+        await bot.send_invoice(
+            chat_id=callback.message.chat.id,
+            title="🚀 Ракета «Орешник»",
+            description="Неотразимый гиперзвуковой удар. Дает +12000 к скрытой военной мощи и наносит разрушительный урон в сводках!",
+            payload="buy_oreshnik",
+            provider_token="",
+            currency="XTR",
+            prices=[LabeledPrice(label="Ракета Орешник", amount=200)]
         )
         await callback.answer()
     except Exception as e:
@@ -1437,7 +1469,15 @@ async def process_successful_payment(message: types.Message):
             await message.answer(
                 "✈️ <b>УСПЕШНОЕ ПРИОБРЕТЕНИЕ СВЕРХЗВУКОВОГО F-16 FALCON!</b>\n\n"
                 "Секретная эскадрилья пополнилась новейшим истребителем. Он незаметен для чужих шпионов и не отображается в общем профиле, "
-                "но даёт <b>+1000 к скрытой военной мощи</b> и будет наносить сокрушительные удары в боевых действиях!",
+                "но даёт <b>+5000 к скрытой военной мощи</b> и будет наносить сокрушительные удары в боевых действиях!",
+                reply_markup=main_menu_kb()
+            )
+        elif payload == "buy_oreshnik":
+            await execute_db("UPDATE countries SET oreshnik = oreshnik + 1 WHERE id = ?", (country['id'],))
+            await message.answer(
+                "🚀 <b>УСПЕШНОЕ ПРИОБРЕТЕНИЕ РАКЕТЫ «ОРЕШНИК»!</b>\n\n"
+                "Секретные пусковые установки развернуты. Это страшное оружие не отображается в профиле, "
+                "но даёт колоссальные <b>+12000 к скрытой военной мощи</b> и гарантирует ужас для любого противника!",
                 reply_markup=main_menu_kb()
             )
         elif payload.startswith("buy_res:"):
@@ -1837,7 +1877,7 @@ async def process_economy_build(callback: types.CallbackQuery):
         
         if item == "settlement":
             if country.get('budget', 0) < 15000 or country.get('materials', 0) < 2000 or country.get('food', 0) < 2000:
-                return await callback.answer("❌ Нужно 15000$, 2000 Мат., 2000 Еды.", show_alert=True)
+                return await callback.answer("❌ Нужно 15k Бюджета, 2k Материалов, 2k Еды.", show_alert=True)
             await execute_db(
                 "UPDATE countries SET budget = budget - 15000, materials = materials - 2000, food = food - 2000, settlements = settlements + 1, gdp = gdp + 200 WHERE id = ?", 
                 (country['id'],)
@@ -1942,7 +1982,7 @@ async def process_army_buy(callback: types.CallbackQuery):
         elif item in ["uavs", "jetuavs", "babayaga", "fpv"]:
             await safe_edit(callback.message, "🛸 <b>Заводы Беспилотных Войск:</b>", reply_markup=army_drones_kb())
         else:
-            await safe_edit(callback.message, "🪖 <b>Наземные войска и укрепления:</b>", reply_markup=army_ground_kb())
+            await safe_edit(callback.message, "🪖 <b>Назем войска и укрепления:</b>", reply_markup=army_ground_kb())
     except Exception as e:
         logging.exception(e)
         await callback.answer("Ошибка приобретения отрядов.", show_alert=True)
@@ -2060,14 +2100,22 @@ async def process_attack(callback: types.CallbackQuery):
 
         att_total = att_base + att_ally_support
         
-        # Интеграция секретных F-16 в сводку результатов боя (НЕ ОТОБРАЖАЯ ИХ В ПРОФИЛЕ)
+        # Интеграция секретных F-16 и Орешника в сводку результатов боя (НЕ ОТОБРАЖАЯ ИХ В ПРОФИЛЕ)
         att_f16 = attacker.get('f16', 0)
         def_f16 = defender.get('f16', 0)
+        
+        att_oreshnik = attacker.get('oreshnik', 0)
+        def_oreshnik = defender.get('oreshnik', 0)
         
         if att_f16 > 0:
             report.append(f"✈️ <b>Секретная авиация:</b> Ваши скрытые истребители F-16 Falcon ({att_f16} шт.) нанесли высокоточные сокрушительные удары по оборонительным рубежам врага!")
         if def_f16 > 0:
             report.append(f"⚠️ <b>Превосходство врага в воздухе!</b> Скрытая эскадрилья F-16 Falcon ({def_f16} шт.) противника перехватила наши передовые колонны и нанесла серьезный урон авиации!")
+            
+        if att_oreshnik > 0:
+            report.append(f"☄️ <b>Ядерный потенциал:</b> Вы применили гиперзвуковые ракеты «Орешник» ({att_oreshnik} шт.)! Страшные и фатальные разрушения по позициям противника.")
+        if def_oreshnik > 0:
+            report.append(f"☠️ <b>Угроза с небес:</b> Противник обрушил на ваши наступающие силы ракеты «Орешник» ({def_oreshnik} шт.), нанеся колоссальный урон армаде!")
 
         # Ландшафтные модификаторы
         if defender.get('mountains', 0) > 0:
