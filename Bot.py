@@ -10,7 +10,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile, InputMediaPhoto, BotCommand
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile, InputMediaPhoto, BotCommand, LabeledPrice, PreCheckoutQuery
 from aiogram.exceptions import TelegramBadRequest
 import aiosqlite
 
@@ -39,7 +39,6 @@ BUTTON_COOLDOWN = 1.0
 ATTACK_COOLDOWN = 300  
 
 def is_spam(user_id: int) -> bool:
-    """Проверяет, превысил ли пользователь лимит частоты нажатий."""
     now = time.time()
     if now - user_last_action.get(user_id, 0) < BUTTON_COOLDOWN:
         return True
@@ -47,7 +46,6 @@ def is_spam(user_id: int) -> bool:
     return False
 
 def get_attack_cooldown(user_id: int) -> int:
-    """Возвращает оставшееся время кулдауна атаки."""
     now = time.time()
     passed = now - user_attack_cooldown.get(user_id, 0)
     if passed < ATTACK_COOLDOWN:
@@ -55,7 +53,6 @@ def get_attack_cooldown(user_id: int) -> int:
     return 0
 
 def set_attack_cooldown(user_id: int):
-    """Устанавливает кулдаун атаки для пользователя."""
     user_attack_cooldown[user_id] = time.time()
 
 async def safe_edit(message: types.Message, text: str, reply_markup=None, photo_id=None):
@@ -73,11 +70,8 @@ async def safe_edit(message: types.Message, text: str, reply_markup=None, photo_
                 await message.answer(text, reply_markup=reply_markup, parse_mode="HTML")
             else:
                 await message.edit_text(text, reply_markup=reply_markup, parse_mode="HTML")
-    except TelegramBadRequest as e:
-        if "message is not modified" in str(e).lower():
-            pass
-        else:
-            logging.error(f"Telegram API Error: {e}")
+    except TelegramBadRequest:
+        pass
 
 def df(flag: str) -> str:
     """Отображает иконку картинки, если флаг - это фото, иначе сам эмодзи-флаг"""
@@ -203,7 +197,8 @@ async def init_db():
                 alliance_id INTEGER DEFAULT 0,
                 gov_type TEXT DEFAULT 'Не выбрано',
                 religion TEXT DEFAULT 'Атеизм',
-                active_laws TEXT DEFAULT ''
+                active_laws TEXT DEFAULT '',
+                f16 INTEGER DEFAULT 0
             )
         """)
         
@@ -272,7 +267,10 @@ async def init_db():
             # Новые войска (Воздух, ПВО и Дроны)
             ("fighters", "INTEGER DEFAULT 0"), ("bombers", "INTEGER DEFAULT 0"), ("helicopters", "INTEGER DEFAULT 0"),
             ("uavs", "INTEGER DEFAULT 0"), ("jet_uavs", "INTEGER DEFAULT 0"), ("baba_yaga", "INTEGER DEFAULT 0"), 
-            ("fpv_drones", "INTEGER DEFAULT 0"), ("aa_guns", "INTEGER DEFAULT 0"), ("sam_systems", "INTEGER DEFAULT 0")
+            ("fpv_drones", "INTEGER DEFAULT 0"), ("aa_guns", "INTEGER DEFAULT 0"), ("sam_systems", "INTEGER DEFAULT 0"),
+            
+            # Донатные эксклюзивы
+            ("f16", "INTEGER DEFAULT 0")
         ]
         for col, col_type in new_columns:
             try:
@@ -395,7 +393,9 @@ def calc_economy_rates(c):
         c.get('helicopters', 0) * 3 +
         c.get('uavs', 0) * 1 +
         c.get('jet_uavs', 0) * 3 +
-        c.get('baba_yaga', 0) * 1
+        c.get('baba_yaga', 0) * 1 +
+        # F-16 потребляет реактивное топливо (нефть)
+        c.get('f16', 0) * 15
     )
     
     citizens_base_growth = int(c.get('citizens', 10000) * 0.01) + (c.get('settlements', 1) * 50)
@@ -507,6 +507,9 @@ class AdminFeedbackState(StatesGroup):
 class DeleteCountryState(StatesGroup):
     confirm = State()
 
+class ShopState(StatesGroup):
+    waiting_for_stars = State()
+
 # ========================================================================
 # КЛАВИАТУРЫ ИГРОКА
 # ========================================================================
@@ -518,7 +521,20 @@ def main_menu_kb():
          InlineKeyboardButton(text="🪖 Военкомат", callback_data="menu_army")],
         [InlineKeyboardButton(text="🤝 Альянс", callback_data="menu_alliance"),
          InlineKeyboardButton(text="📜 Политика и Законы", callback_data="menu_laws")],
-        [InlineKeyboardButton(text="✉️ Связь с админами", callback_data="menu_feedback")]
+        [InlineKeyboardButton(text="✉️ Связь с админами", callback_data="menu_feedback")],
+        [InlineKeyboardButton(text="💎 Донат Магазин", callback_data="menu_shop")]
+    ])
+
+def shop_main_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✈️ Секретный истребитель F-16 (50 ⭐️)", callback_data="shop_buy_f16")],
+        [InlineKeyboardButton(text="💰 Бюджет (1⭐️ = 1500 💰)", callback_data="shop_res_budget"),
+         InlineKeyboardButton(text="🧱 Материалы (1⭐️ = 150 🧱)")],
+        [InlineKeyboardButton(text="⚙️ Сталь (1⭐️ = 100 ⚙️)", callback_data="shop_res_steel"),
+         InlineKeyboardButton(text="💻 Электроника (1⭐️ = 80 💻)")],
+        [InlineKeyboardButton(text="🛢 Нефть (1⭐️ = 250 🛢)", callback_data="shop_res_oil"),
+         InlineKeyboardButton(text="🥩 Еда (1⭐️ = 500 🥩)")],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="menu_main")]
     ])
 
 def economy_build_kb():
@@ -767,7 +783,9 @@ def get_base_power(country):
             (c.get('cruisers', 0) * 150) + \
             (c.get('battleships', 0) * 500) + \
             (c.get('carriers', 0) * 1000) + \
-            (c.get('bunkers', 0) * 50)
+            (c.get('bunkers', 0) * 50) + \
+            (c.get('f16', 0) * 1000) # F-16 даёт сильную секретную боевую мощь!
+            
     if 'ships' in c and c['ships'] > 0:
         power += c['ships'] * 50
     return power
@@ -1177,6 +1195,7 @@ async def process_menus(callback: types.CallbackQuery, state: FSMContext):
                 f"🛸 <b>Дроны:</b> {country.get('uavs',0)} БПЛА | {country.get('jet_uavs',0)} Реак. | {country.get('baba_yaga',0)} Б.Яга | {country.get('fpv_drones',0)} ФПВ\n"
                 f"⚓️ <b>Флот:</b> {country.get('boats', 0)} Лодок | {country.get('corvettes',0)} Корв. | {country.get('submarines',0)} Подл. | {country.get('destroyers', 0)} Эсм. | {country.get('cruisers', 0)} Крейс. | {country.get('battleships', 0)} Линк. | {country.get('carriers',0)} Авианос.\n"
                 f"🛡 <b>Защита:</b> {country.get('bunkers', 0)} Бункеры | 🕵️‍♂️ Шпионы: {country.get('spies', 0)}"
+                # F-16 скрыт в моя страна (по ТЗ: нигде не увидишь этот истребитель, но он даёт мощь)
             )
             
             p_kb = main_menu_kb().inline_keyboard.copy()
@@ -1291,9 +1310,161 @@ async def process_menus(callback: types.CallbackQuery, state: FSMContext):
                 reply_markup=war_targets_kb(targets)
             )
             await callback.answer("Штабные карты обновлены.")
+            
+        elif action == "shop":
+            await safe_edit(callback.message, 
+                "💎 <b>Донат Магазин за Telegram Stars (⭐️)</b>\n\n"
+                "Здесь вы можете приобрести секретное вооружение или моментально пополнить дефицитные государственные запасы ресурсов по выгодному курсу!\n\n"
+                "<b>Ваш государственный баланс ресурсов:</b>\n"
+                f"💵 Бюджет: {country.get('budget', 0):,}$ | 🧱 Матер.: {country.get('materials', 0):,}\n"
+                f"⚙️ Сталь: {country.get('steel', 0):,} | 💻 Электр.: {country.get('electronics', 0):,}\n"
+                f"🛢 Нефть: {country.get('oil', 0):,} | 🥩 Еда: {country.get('food', 0):,}\n",
+                reply_markup=shop_main_kb()
+            )
+            await callback.answer()
     except Exception as e:
         logging.exception(e)
         await callback.answer("❌ Сбой в обработке меню. Пожалуйста, попробуйте еще раз.", show_alert=True)
+
+# ========================================================================
+# ДАКТИЧЕСКИЙ ДОНАТ МАГАЗИН (TELEGRAM STARS)
+# ========================================================================
+@dp.callback_query(F.data == "shop_buy_f16")
+async def shop_buy_f16(callback: types.CallbackQuery):
+    try:
+        await bot.send_invoice(
+            chat_id=callback.message.chat.id,
+            title="✈️ Истребитель F-16 Falcon",
+            description="Секретное превосходство в воздухе. Дает +1000 к скрытой военной мощи и уникальное участие в боевых сводках!",
+            payload="buy_f16",
+            provider_token="",
+            currency="XTR",
+            prices=[LabeledPrice(label="F-16 Falcon", amount=50)]
+        )
+        await callback.answer()
+    except Exception as e:
+        logging.exception(e)
+        await callback.answer("❌ Не удалось сформировать инвойс.", show_alert=True)
+
+@dp.callback_query(F.data.startswith("shop_res_"))
+async def shop_res_select(callback: types.CallbackQuery, state: FSMContext):
+    try:
+        res_type = callback.data.split("_")[2]
+        await state.update_data(donate_res_type=res_type)
+        
+        rates = {
+            "budget": "1500 💰 Бюджета",
+            "materials": "150 🧱 Материалов",
+            "steel": "100 ⚙️ Стали",
+            "electronics": "80 💻 Электроники",
+            "oil": "250 🛢 Нефти",
+            "food": "500 🥩 Еды"
+        }
+        
+        await safe_edit(callback.message, 
+            f"🛒 <b>Закупка ресурса за Telegram Stars (⭐️)</b>\n\n"
+            f"Курс обмена: <b>1 ⭐️ = {rates[res_type]}</b>.\n\n"
+            f"Пожалуйста, отправьте мне сообщением количество Звёзд (⭐️), которое вы хотите потратить (целое число больше 0):",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад в магазин", callback_data="menu_shop")]])
+        )
+        await state.set_state(ShopState.waiting_for_stars)
+        await callback.answer()
+    except Exception as e:
+        logging.exception(e)
+        await callback.answer("❌ Ошибка при выборе ресурса.", show_alert=True)
+
+@dp.message(ShopState.waiting_for_stars)
+async def shop_process_stars_input(message: types.Message, state: FSMContext):
+    try:
+        stars = int(message.text)
+        if stars <= 0:
+            return await message.answer("❌ Количество звёзд должно быть больше нуля. Попробуйте снова:")
+    except ValueError:
+        return await message.answer("❌ Пожалуйста, введите корректное целое число звезд:")
+        
+    data = await state.get_data()
+    res_type = data.get("donate_res_type")
+    
+    rates = {
+        "budget": 1500,
+        "materials": 150,
+        "steel": 100,
+        "electronics": 80,
+        "oil": 250,
+        "food": 500
+    }
+    
+    total_res = stars * rates[res_type]
+    res_name = RES_MAP.get(res_type, res_type)
+    
+    try:
+        await bot.send_invoice(
+            chat_id=message.chat.id,
+            title=f"Закупка: {res_name}",
+            description=f"Пакет поставок: зачисление {total_res:,} ед. {res_name} в гос. резервы вашей страны.",
+            payload=f"buy_res:{res_type}:{stars}",
+            provider_token="",
+            currency="XTR",
+            prices=[LabeledPrice(label=f"Оплата звезд {res_name}", amount=stars)]
+        )
+        await state.clear()
+    except Exception as e:
+        logging.exception(e)
+        await message.answer("❌ Произошла ошибка отправки инвойса на оплату. Обратитесь к разработчикам.", reply_markup=main_menu_kb())
+        await state.clear()
+
+@dp.pre_checkout_query()
+async def process_pre_checkout(pre_checkout_query: PreCheckoutQuery):
+    try:
+        await bot.answer_pre_checkout_query(pre_checkout_query.id, ok=True)
+    except Exception as e:
+        logging.error(f"Error answering pre_checkout: {e}")
+
+@dp.message(F.successful_payment)
+async def process_successful_payment(message: types.Message):
+    payment = message.successful_payment
+    payload = payment.invoice_payload
+    user_id = message.from_user.id
+    
+    country = await fetch_one("SELECT * FROM countries WHERE owner_id = ?", (user_id,))
+    if not country:
+        await message.answer("❌ Произошла ошибка: Ваша страна не найдена, но оплата прошла. Пожалуйста, напишите в поддержку (/feedback).")
+        return
+        
+    try:
+        if payload == "buy_f16":
+            await execute_db("UPDATE countries SET f16 = f16 + 1 WHERE id = ?", (country['id'],))
+            await message.answer(
+                "✈️ <b>УСПЕШНОЕ ПРИОБРЕТЕНИЕ СВЕРХЗВУКОВОГО F-16 FALCON!</b>\n\n"
+                "Секретная эскадрилья пополнилась новейшим истребителем. Он незаметен для чужих шпионов и не отображается в общем профиле, "
+                "но даёт <b>+1000 к скрытой военной мощи</b> и будет наносить сокрушительные удары в боевых действиях!",
+                reply_markup=main_menu_kb()
+            )
+        elif payload.startswith("buy_res:"):
+            _, res_type, stars_str = payload.split(":")
+            stars = int(stars_str)
+            
+            rates = {
+                "budget": 1500,
+                "materials": 150,
+                "steel": 100,
+                "electronics": 80,
+                "oil": 250,
+                "food": 500
+            }
+            
+            amount = stars * rates[res_type]
+            res_name = RES_MAP.get(res_type, res_type)
+            
+            await execute_db(f"UPDATE countries SET {res_type} = {res_type} + ? WHERE id = ?", (amount, country['id']))
+            await message.answer(
+                f"✅ <b>ОПЛАТА ПРОШЛА УСПЕШНО!</b>\n\n"
+                f"На государственные склады вашей страны зачислено <b>+{amount:,} {res_name}</b> за {stars} ⭐️!",
+                reply_markup=main_menu_kb()
+            )
+    except Exception as e:
+        logging.exception(e)
+        await message.answer("❌ Ошибка при начислении товара. Срочно напишите администрации через команду обратной связи!")
 
 # ========================================================================
 # УДАЛЕНИЕ СТРАНЫ ПОЛЬЗОВАТЕЛЕМ
@@ -1889,6 +2060,15 @@ async def process_attack(callback: types.CallbackQuery):
 
         att_total = att_base + att_ally_support
         
+        # Интеграция секретных F-16 в сводку результатов боя
+        att_f16 = attacker.get('f16', 0)
+        def_f16 = defender.get('f16', 0)
+        
+        if att_f16 > 0:
+            report.append(f"⚡️ <b>Секретная авиация:</b> Ваши истребители F-16 Falcon ({att_f16} шт.) осуществили прецизионные ракетные удары, подавив ПВО и наземные силы противника!")
+        if def_f16 > 0:
+            report.append(f"⚠️ <b>Превосходство врага в воздухе!</b> Вражеские скрытые истребители F-16 Falcon ({def_f16} шт.) перехватили наши штурмовики и сорвали артподготовку!")
+
         # Ландшафтные модификаторы
         if defender.get('mountains', 0) > 0:
             def_base = int(def_base * 1.15)
@@ -2322,7 +2502,7 @@ async def admin_list_all(callback: types.CallbackQuery):
     alliances = await fetch_all("SELECT id, flag, name FROM alliances")
     if not alliances: return await callback.message.answer("Альянсов нет.")
     text = "📋 <b>Список Альянсов (ID):</b>\n\n"
-    for a in alliances: text += f"ID: <code>{a['id']}</code> | {df(a.get('flag'))} {a.get('name')}\n"
+    for a in alliances: text += f"ID: <code>{a['id']}</code> | {df(a.get('flag'))} {a['name']}\n"
     await safe_edit(callback.message, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="adm_alliances")]]))
     await callback.answer()
 
