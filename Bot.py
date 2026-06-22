@@ -43,7 +43,7 @@ user_last_action: Dict[int, float] = {}
 user_attack_cooldown: Dict[int, float] = {}
 
 BUTTON_COOLDOWN = 1.0  
-ATTACK_COOLDOWN = 240.0  
+ATTACK_COOLDOWN = 300.0  
 
 # ========================================================================
 # ОПРЕДЕЛЕНИЕ ЗАКОНОВ, РЕЛИГИЙ И СТРОЕВ (БАФФЫ/ДЕБАФФЫ)
