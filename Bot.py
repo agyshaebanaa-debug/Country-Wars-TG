@@ -9,7 +9,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile, InputMediaPhoto
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile, InputMediaPhoto, BotCommand
 from aiogram.exceptions import TelegramBadRequest
 import aiosqlite
 
@@ -35,7 +35,7 @@ user_last_action = {}
 user_attack_cooldown = {}
 
 BUTTON_COOLDOWN = 1.0  
-ATTACK_COOLDOWN = 300  
+ATTACK_COOLDOWN = 240  
 
 def is_spam(user_id: int) -> bool:
     now = time.time()
@@ -1639,6 +1639,14 @@ async def admin_rem_finish(message: types.Message, state: FSMContext):
 async def main():
     await init_db()
     asyncio.create_task(economy_tick())
+    
+    # Установка меню команд (подсказки при вводе /)
+    commands = [
+        BotCommand(command="start", description="Главное меню / Старт"),
+        BotCommand(command="send", description="Отправить ресурсы (/send ID Ресурс Кол-во)"),
+        BotCommand(command="admin", description="Админ-панель (только для админов)")
+    ]
+    await bot.set_my_commands(commands)
     
     logging.info("Бот запущен. Мир начал свое существование...")
     await bot.delete_webhook(drop_pending_updates=True)
